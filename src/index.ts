@@ -106,6 +106,12 @@ export default class TypstPlugin extends Plugin {
       const content_hash = SimpleHash.djb2(typst_content)
         .toString()
         .slice(0, 16);
+      // 修复链路 C1：思源插入公式块时先放 <div spin="1"></div> 空占位，KaTeX 内容后填。
+      // 此时 firstElementChild.firstElementChild 为 null，跳过即可；
+      // 思源回填内容后，观察器的 normal_first_block 分支会重新触发本函数。
+      if (!element.firstElementChild?.firstElementChild) {
+        return;
+      }
       const first_time =
         element.firstElementChild.firstElementChild?.shadowRoot === null;
       if (
