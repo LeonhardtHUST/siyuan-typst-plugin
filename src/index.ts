@@ -336,117 +336,179 @@ $pin("l1")${typst_content}$
       compiler.unmapShadow(dest);
       lru_cache.set(content_hash, shadowRoot.innerHTML);
     };
-    this.eventBus.on("loaded-protyle-static", (event) => {
-      const p = event.detail.protyle;
-      const observer = new MutationObserver((mutations) => {
-        // console.log("Observed mutations:", mutations.length);
-        // console.log(mutations);
-        const mut_elems = mutations.filter(
-          (m) => m.target.nodeType === Node.ELEMENT_NODE,
-        );
-        // paste operation
-        const added_elems = mut_elems
-          .filter((m) =>
-            (m.target as HTMLElement).classList.contains("protyle-wysiwyg"),
-          )
-          .map((m) => Array.from(m.addedNodes.values()))
-          .flat()
-          .filter((n) => n.nodeType === Node.ELEMENT_NODE)
-          .map((n) => n as HTMLElement);
-        const added_inline_elems = added_elems
-          .map((e) =>
-            Array.from(
-              e
-                .querySelectorAll(
-                  `span[data-type='inline-math'][data-content^='\\\\t'][data-content$='}']`,
-                )
-                .values(),
-            ),
-          )
-          .flat() as HTMLElement[];
+    // 修复链路 B1：v3.8.8 的 setHTML 先将内容写入 DOM，之后才派发 loaded-protyle-static，
+    // 只靠事后 MutationObserver 永远收不到初始内容的"新增节点"记录，必须主动扫描存量节点。
+    const inline_selector =
+      "span[data-type='inline-math'][data-content^='\\\\t'][data-content$='}']";
+    const block_selector =
+      "div.render-node[data-type='NodeMathBlock'][data-content^='\\\\t'][data-content$='}']";
 
-        const block_selector = `div.render-node[data-type='NodeMathBlock'][data-content^='\\\\t'][data-content$='}']`;
-        const added_block_elems = added_elems
-          .map((e) =>
-            Array.from(e.querySelectorAll(block_selector).values()).concat(
-              e.matches(block_selector) ? [e] : [],
-            ),
-          )
-          .flat() as HTMLElement[];
-        const elements = Array.from(
-          new Set(
-            mutations
-              .filter(
-                (mutation) =>
-                  mutation.type === "childList" &&
-                  mutation.target.nodeType === Node.ELEMENT_NODE,
-              )
-              .map((mutation) => mutation.target as HTMLElement),
-          ),
-        );
-        const normal_inline = elements.filter(
-          (elem) => elem.getAttribute("data-type") === "inline-math",
-        );
-        const normal_first_block = elements
-          .filter((element) => element.parentElement !== null)
-          .map((element) => element.parentElement)
-          .filter(
-            (element) => element.getAttribute("data-type") === "NodeMathBlock",
-          );
-        const normal_second_block = elements
-          .filter((element) => element.parentElement !== null)
-          .filter((element) => element.parentElement.parentElement !== null)
-          .map((element) => element.parentElement.parentElement)
-          .filter(
-            (element) => element.getAttribute("data-type") === "NodeMathBlock",
-          );
-        const attribute_changed_elems = mutations
-          .filter((m) => m.type === "attributes")
-          .map((m) => m.target as HTMLElement);
-        const final_inline = new Set(
-          normal_inline
-            .concat(added_inline_elems)
-            .concat(
-              attribute_changed_elems.filter(
-                (elem) => elem.getAttribute("data-type") === "inline-math",
-              ),
-            ),
-        );
-        const final_block = new Set(
-          normal_first_block
-            .concat(normal_second_block)
-            .concat(added_block_elems)
-            .concat(
-              attribute_changed_elems.filter(
-                (elem) => elem.getAttribute("data-type") === "NodeMathBlock",
-              ),
-            ),
-        );
-        Promise.allSettled(
-          Array.from(final_inline)
-            .map(render_inline_once)
-            .concat(Array.from(final_block).map(render_block_once)),
-        )
-          .then((results) => {
-            Array.from(results)
-              .filter((result) => result.status === "rejected")
-              .forEach((result) => {
-                console.log("Rejected!", result.reason);
-              });
-          })
-          .catch((e) => {
-            console.log("Error allSettled", e);
+    const scan_element = (root: ParentNode) => {
+      if (!root || typeof (root as Element).querySelectorAll !== "function") {
+        return;
+      }
+      const inline = Array.from(
+        root.querySelectorAll<HTMLElement>(inline_selector),
+      );
+      const block = Array.from(
+        root.querySelectorAll<HTMLElement>(block_selector),
+      );
+      const root_elem = root as Element;
+      if (root_elem.matches && root_elem.matches(block_selector)) {
+        block.push(root_elem as HTMLElement);
+      }
+      if (inline.length + block.length === 0) {
+        return;
+      }
+      Promise.allSettled(
+        inline
+          .map(render_inline_once)
+          .concat(block.map(render_block_once)),
+      ).then((results) => {
+        results
+          .filter((r) => r.status === "rejected")
+          .forEach((r) => {
+            console.warn("[typst] scan render rejected:", (r as PromiseRejectedResult).reason);
           });
       });
+    };
+
+    const process_mutations = (mutations: MutationRecord[]) => {
+      // console.log("Observed mutations:", mutations.length);
+      // console.log(mutations);
+      const mut_elems = mutations.filter(
+        (m) => m.target.nodeType === Node.ELEMENT_NODE,
+      );
+      // paste operation
+      const added_elems = mut_elems
+        .filter((m) =>
+          (m.target as HTMLElement).classList.contains("protyle-wysiwyg"),
+        )
+        .map((m) => Array.from(m.addedNodes.values()))
+        .flat()
+        .filter((n) => n.nodeType === Node.ELEMENT_NODE)
+        .map((n) => n as HTMLElement);
+      const added_inline_elems = added_elems
+        .map((e) =>
+          Array.from(
+            e.querySelectorAll<HTMLElement>(inline_selector).values(),
+          ),
+        )
+        .flat() as HTMLElement[];
+
+      const added_block_elems = added_elems
+        .map((e) =>
+          Array.from(e.querySelectorAll<HTMLElement>(block_selector).values()).concat(
+            e.matches(block_selector) ? [e] : [],
+          ),
+        )
+        .flat() as HTMLElement[];
+      const elements = Array.from(
+        new Set(
+          mutations
+            .filter(
+              (mutation) =>
+                mutation.type === "childList" &&
+                mutation.target.nodeType === Node.ELEMENT_NODE,
+            )
+            .map((mutation) => mutation.target as HTMLElement),
+        ),
+      );
+      const normal_inline = elements.filter(
+        (elem) => elem.getAttribute("data-type") === "inline-math",
+      );
+      const normal_first_block = elements
+        .filter((element) => element.parentElement !== null)
+        .map((element) => element.parentElement)
+        .filter(
+          (element) => element.getAttribute("data-type") === "NodeMathBlock",
+        );
+      const normal_second_block = elements
+        .filter((element) => element.parentElement !== null)
+        .filter((element) => element.parentElement.parentElement !== null)
+        .map((element) => element.parentElement.parentElement)
+        .filter(
+          (element) => element.getAttribute("data-type") === "NodeMathBlock",
+        );
+      const attribute_changed_elems = mutations
+        .filter((m) => m.type === "attributes")
+        .map((m) => m.target as HTMLElement);
+      const final_inline = new Set(
+        normal_inline
+          .concat(added_inline_elems)
+          .concat(
+            attribute_changed_elems.filter(
+              (elem) => elem.getAttribute("data-type") === "inline-math",
+            ),
+          ),
+      );
+      const final_block = new Set(
+        normal_first_block
+          .concat(normal_second_block)
+          .concat(added_block_elems)
+          .concat(
+            attribute_changed_elems.filter(
+              (elem) => elem.getAttribute("data-type") === "NodeMathBlock",
+            ),
+          ),
+      );
+      Promise.allSettled(
+        Array.from(final_inline)
+          .map(render_inline_once)
+          .concat(Array.from(final_block).map(render_block_once)),
+      )
+        .then((results) => {
+          Array.from(results)
+            .filter((result) => result.status === "rejected")
+            .forEach((result) => {
+              console.log("Rejected!", result.reason);
+            });
+        })
+        .catch((e) => {
+          console.log("Error allSettled", e);
+        });
+    };
+
+    const attach_observer = (p: any) => {
+      if (!p?.contentElement || protyle_observer_map.has(p)) {
+        return;
+      }
+      const observer = new MutationObserver(process_mutations);
       observer.observe(p.contentElement, {
         childList: true,
         subtree: true,
         attributes: true,
         attributeFilter: ["data-content"],
       });
-      // console.log("observer created");
       protyle_observer_map.set(p, observer);
+    };
+
+    this.eventBus.on("loaded-protyle-static", (event) => {
+      const p = event.detail.protyle;
+      attach_observer(p);
+      // 存量扫描：事件派发时内容已在 DOM 中
+      scan_element(p.wysiwyg?.element ?? p.contentElement);
     });
+
+    // 滚动懒加载（CB_GET_APPEND / CB_GET_BEFORE）走该事件，动态内容同样需要扫描
+    this.eventBus.on("loaded-protyle-dynamic", (event: any) => {
+      const p = event.detail?.protyle;
+      if (p?.wysiwyg?.element) {
+        scan_element(p.wysiwyg.element);
+      }
+    });
+
+    // 兜底：启动时恢复的页签，其 loaded-protyle-static 在插件就绪前已派发（链路 B2），
+    // 用户切入页签时补挂观察器并扫描
+    this.eventBus.on("switch-protyle", (event: any) => {
+      const p = event.detail?.protyle;
+      if (!p) {
+        return;
+      }
+      attach_observer(p);
+      scan_element(p.wysiwyg?.element ?? p.contentElement);
+    });
+
     this.eventBus.on("destroy-protyle", (event) => {
       const p = event.detail.protyle;
       const observer = protyle_observer_map.get(p);
@@ -457,5 +519,16 @@ $pin("l1")${typst_content}$
       }
       // console.log(`Destroy Protyle. id: ${p.id}, block id: ${p.block.id}`);
     });
+
+    // 全局兜底扫描：覆盖所有"事件早于插件就绪"的已打开文档
+    wasmReady
+      .then(() => {
+        scan_element(document.body);
+        // 思源懒渲染回填占位节点需要时间，稍后复扫一次
+        setTimeout(() => scan_element(document.body), 1500);
+      })
+      .catch((e) => {
+        console.error("[typst] wasm init failed:", e);
+      });
   }
 }
