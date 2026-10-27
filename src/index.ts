@@ -64,7 +64,13 @@ export default class TypstPlugin extends Plugin {
       compiler: createTypstCompiler(),
       renderer: createTypstRenderer(),
     };
-    await init_context(_backup_context);
+    // 修复链路 B2：初始化转为后台任务，onload 不再被 wasm 加载阻塞。
+    // 否则事件监听注册晚于"启动时恢复页签"派发的 loaded-protyle-static，监听器永远错过。
+    // 渲染函数内部 await wasmReady 排队，就绪后统一放行。
+    const wasmReady: Promise<void> = (async () => {
+      await init_context(_backup_context);
+      await init_context(context);
+    })();
     const get_backup_context = async () => {
       const res = {
         compiler: _backup_context.compiler,
@@ -75,10 +81,10 @@ export default class TypstPlugin extends Plugin {
       await init_context(_backup_context);
       return res;
     };
-    await init_context(context);
     const protyle_observer_map = new Map<object, MutationObserver>();
     let current_parsed = 0;
     const render_block_once = async (element: HTMLElement) => {
+      await wasmReady;
       // console.log("block", element);
       const raw_content = element.getAttribute("data-content");
       const is_raw_typst =
@@ -191,6 +197,7 @@ $ ${typst_content} $
       lru_cache.set(content_hash, shadowRoot.innerHTML);
     };
     const render_inline_once = async (element: HTMLElement) => {
+      await wasmReady;
       // console.log("inline", element);
       const raw_content = element.getAttribute("data-content");
       const is_raw_typst =
