@@ -383,7 +383,10 @@ unregisterMathRenderer(id: string): void
 - 【自动提交】
 
 **P5 — 决策点（本轮不承诺执行）**
-- 内核导出 patch / registry 向 siyuan-note 提上游 PR / 换池机制根治（incr server）
+- 内核导出 patch（HTML/Word 导出内置 Typst 能力，成本约 47MB 资源/产物）
+- 换池机制根治（改用 wasm incr server）
+- ~~registry 向 siyuan-note 提上游 PR~~ —— **2026-10-27 用户决定：不提上游 PR**，
+  registry 仅作为自有 fork 的能力维护
 
 ## 2.3 执行约定
 
