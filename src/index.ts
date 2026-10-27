@@ -6,7 +6,7 @@
  * @LastEditTime : 2024-07-12 18:25:44
  * @Description  :
  */
-import { Plugin } from "siyuan";
+import { Plugin, Setting } from "siyuan";
 import SimpleHash from "./hash";
 import {
   createTypstCompiler,
@@ -285,6 +285,9 @@ export default class TypstPlugin extends Plugin {
         sync_typst_math_flag(w);
         scan_element(w);
       });
+      document
+        .querySelectorAll<HTMLSelectElement>("#typst-mode-select")
+        .forEach((el) => (el.value = mode));
       if (typeof (window as any).showMessage === "function") {
         (window as any).showMessage(
           `Typst 渲染档位：${mode === "typst-first" ? "typst-first（默认 Typst）" : "katex-first（默认 KaTeX）"}`,
@@ -313,6 +316,37 @@ export default class TypstPlugin extends Plugin {
       }
     } catch (e) {
       console.warn("[typst] 顶栏按钮不可用", e);
+    }
+
+    // ── 插件设置面板（设置 → 插件 → 本插件 → 设置）────────────────────────────
+    try {
+      const mode_select = document.createElement("select");
+      mode_select.id = "typst-mode-select";
+      mode_select.className = "b3-select fn__flex-1";
+      mode_select.innerHTML = [
+        '<option value="katex-first">katex-first（默认 KaTeX，按文档开启 Typst）</option>',
+        '<option value="typst-first">typst-first（默认 Typst，按文档退回 KaTeX）</option>',
+      ].join("");
+      mode_select.value = render_mode;
+      mode_select.addEventListener("change", () => {
+        void set_render_mode(mode_select.value as RenderMode);
+      });
+      const setting = new Setting({
+        confirmCallback: () => {
+          void set_render_mode(mode_select.value as RenderMode);
+        },
+      });
+      setting.addItem({
+        title: "数学渲染档位",
+        description:
+          "katex-first：默认 KaTeX，文档加自定义属性 custom-typstmath=1 才用 Typst；" +
+          "typst-first：默认 Typst，文档加 custom-katexmath=1 才用 KaTeX。" +
+          "公式内容带反斜杠-t 前缀时始终用 Typst。",
+        actionElement: mode_select,
+      });
+      this.setting = setting;
+    } catch (e) {
+      console.warn("[typst] 设置面板创建失败", e);
     }
     const sync_typst_math_flag_of_protyle = (p: any) =>
       sync_typst_math_flag(p?.wysiwyg?.element);
