@@ -233,6 +233,9 @@ $ ${typst_content} $
       )
         return;
       element.setAttribute("data-render-typst", content_hash);
+      // 修复链路 C3：思源在 KaTeX 解析失败时给行内公式打上 ft__error（红色样式）。
+      // 此处是所有成功渲染路径（含 LRU 缓存命中）的公共位置，统一移除，避免残留错误外观。
+      element.classList.remove("ft__error");
       if (first_time) {
         const container = document.createElement("span");
         container.setAttribute("class", "typst-display");
@@ -313,9 +316,6 @@ $pin("l1")${typst_content}$
         return svg;
       });
       shadowRoot.innerHTML = svg;
-      // 修复链路 C3：思源在 KaTeX 解析失败时给行内公式打上 ft__error（红色样式），
-      // 成功渲染为 Typst 后应移除，避免残留错误外观
-      element.classList.remove("ft__error");
       const svgElem = shadowRoot.firstElementChild;
       const width = Number.parseFloat(svgElem.getAttribute("data-width"));
       const height = Number.parseFloat(svgElem.getAttribute("data-height"));
