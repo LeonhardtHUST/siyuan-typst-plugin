@@ -9,3 +9,6 @@ dev
 dist
 build
 tmp
+
+# typst wasm 二进制由 scripts/fetch-wasm.mjs 获取，不入库
+public/wasm/

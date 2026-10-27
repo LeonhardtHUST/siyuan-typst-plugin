@@ -46,13 +46,14 @@ export default class TypstPlugin extends Plugin {
     const init_context = async ({ compiler, renderer }) => {
       await Promise.all([
         compiler.init({
-          getModule: () =>
-            "https://cdn.jsdelivr.net/npm/@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm",
+          // 胶水 JS（打包进本插件）与 wasm 必须来自同一次 typst.ts 构建（0.6.1-rc3），
+          // wasm-bindgen 符号按构建变化，跨版本会产生 LinkError。
+          // wasm 由 scripts/fetch-wasm.mjs 自托管到插件目录，不再依赖未锁版本的 CDN。
+          getModule: () => `/plugins/${this.name}/wasm/typst_ts_web_compiler_bg.wasm`,
           beforeBuild: [preloadFontAssets()],
         }),
         renderer.init({
-          getModule: () =>
-            "https://cdn.jsdelivr.net/npm/@myriaddreamin/typst-ts-renderer/pkg/typst_ts_renderer_bg.wasm",
+          getModule: () => `/plugins/${this.name}/wasm/typst_ts_renderer_bg.wasm`,
         }),
       ]);
     };
