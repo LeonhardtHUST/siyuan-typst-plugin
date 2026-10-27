@@ -23,6 +23,24 @@
   （连 katex.min.js 都不发起请求），覆盖编辑器/公式编辑弹窗/导出预览全部前端路径，
   目标"一经注入只有一次渲染"。详见第二部分。
 
+### 第二部分执行进度（2026-10-27）
+
+- ✅ **P1 完成**：`patches/siyuan/math-renderer-registry.patch` 已生成并验证
+  （v3.8.8 源码 `git apply --check` 通过、esbuild 语法检查通过），已提交到
+  siyuan-patch 并推送到 fork。
+- 🟡 **P0 基本完成，剩一个授权阻塞**：`sync-upstream.yml` 与 `release-docker.yml`
+  改造（GHCR、接入 registry patch）已在本地提交 `7517ce9`，但 **gh token 缺少
+  `workflow` scope，GitHub 拒绝推送含 workflow 的提交**。解除方式：用户执行
+  `gh auth refresh -s workflow` 后补推该提交；在此之前 CI 镜像构建无法触发。
+- ✅ **P2 核心完成**：插件侧注册表适配（特性检测 + 双模式）已提交并验证降级路径
+  （官方思源 4/4 接管、无标记文档 476 公式 0 错误）。patched 镜像下的零 KaTeX
+  模式待 P0 解除后验证。
+- 📌 **P2 侦察结论（修正计划假设）**：SiYuan 的公式编辑面板（双击公式打开的
+  `.protyle-util`）**只有源码 textarea，没有内置 KaTeX 预览**——编辑时的"预览"就是
+  身后的公式块本身（随输入实时更新）。因此编辑体验由块级接管/registry 覆盖即可，
+  无需单独接管编辑面板。
+- ⬜ P3 导出链路（待 patched 镜像）、P4 边角与移动端未开始。
+
 ---
 
 ## 0. 总览
