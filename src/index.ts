@@ -116,23 +116,34 @@ export default class TypstPlugin extends Plugin {
       await init_context(context);
     })();
     const get_backup_context = async () => {
-      const res = {
+      // 先初始化"下一代"备份，成功后才把旧备份交出：
+      // 原实现先交出旧实例再初始化新实例，一旦初始化失败（双标签页并发渲染时
+      // wasm 实例创建可能 OOM/失败），主上下文会拿到未初始化实例，
+      // 后续所有渲染抛错 → 注册表回退 KaTeX → 整页公式退化为 KaTeX。
+      const next = {
+        compiler: createTypstCompiler(),
+        renderer: createTypstRenderer(),
+      };
+      await init_context(next);
+      const prev = {
         compiler: _backup_context.compiler,
         renderer: _backup_context.renderer,
       };
-      _backup_context.compiler = createTypstCompiler();
-      _backup_context.renderer = createTypstRenderer();
-      await init_context(_backup_context);
-      return res;
+      _backup_context.compiler = next.compiler;
+      _backup_context.renderer = next.renderer;
+      return prev;
     };
     const protyle_observer_map = new Map<object, MutationObserver>();
     let current_parsed = 0;
+    // 换池阈值：双标签页同时渲染时，100 会导致频繁重建 wasm 实例（内存与失败风险）；
+    // 400 在单页数百公式的场景下仍能回收内存，同时显著降低多页并发时的换池频率。
+    const SWAP_THRESHOLD = 400;
     // 换池（备份编译器热切换）必须串行：并行渲染下多个任务会同时到达阈值，
     // 无锁时重复初始化同一份 _backup_context，拿到半初始化实例导致 add_source undefined。
     let swap_in_flight: Promise<void> | null = null;
     const maybe_swap_context = async () => {
       current_parsed += 1;
-      if (current_parsed < 100) {
+      if (current_parsed < SWAP_THRESHOLD) {
         return;
       }
       if (swap_in_flight) {
@@ -141,9 +152,14 @@ export default class TypstPlugin extends Plugin {
       }
       swap_in_flight = (async () => {
         current_parsed = 0;
-        const backup = await get_backup_context();
-        context.compiler = backup.compiler;
-        context.renderer = backup.renderer;
+        try {
+          const backup = await get_backup_context();
+          context.compiler = backup.compiler;
+          context.renderer = backup.renderer;
+        } catch (e) {
+          // 换池失败不应影响继续渲染：保留旧编译器，稍后重试
+          console.warn("[typst] 换池失败，继续使用现有编译器:", e);
+        }
       })().finally(() => {
         swap_in_flight = null;
       });
@@ -666,6 +682,20 @@ $pin("l1")${typst_content}$
             return true;
           } catch (e) {
             console.warn("[typst] 注册表渲染失败，回退 KaTeX:", e);
+            // 自愈：瞬时故障（如换池失败）恢复后重新接管该文档，避免整页停留在 KaTeX。
+            // 同一文档 3 秒内最多重试一次，防止故障持续时形成死循环。
+            try {
+              const wysiwyg = context.element.closest(".protyle-wysiwyg") as HTMLElement | null;
+              if (wysiwyg && wysiwyg.getAttribute("data-typst-retry") !== "1") {
+                wysiwyg.setAttribute("data-typst-retry", "1");
+                setTimeout(() => {
+                  wysiwyg.removeAttribute("data-typst-retry");
+                  scan_element(wysiwyg);
+                }, 3000);
+              }
+            } catch (retryError) {
+              // 忽略
+            }
             return false;
           }
         },
