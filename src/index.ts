@@ -257,10 +257,16 @@ export default class TypstPlugin extends Plugin {
         .toString()
         .slice(0, 16);
       // 修复链路 C1：思源插入公式块时先放 <div spin="1"></div> 空占位，KaTeX 内容后填。
-      // 此时 firstElementChild.firstElementChild 为 null，跳过即可；
-      // 思源回填内容后，观察器的 normal_first_block 分支会重新触发本函数。
-      if (!element.firstElementChild?.firstElementChild) {
+      if (!element.firstElementChild) {
         return;
+      }
+      if (!element.firstElementChild.firstElementChild) {
+        // 常规路径（KaTeX 先渲染）：跳过，等回填后由观察器重试；
+        // 但注册表模式在 KaTeX 之前认领，不会有人回填——必须自建渲染容器，
+        // 否则 data-render 已被置位、KaTeX 被跳过，公式永久空白。
+        const claimed_container = document.createElement("div");
+        element.firstElementChild.replaceChildren(claimed_container);
+        claimed_container.attachShadow({ mode: "open" });
       }
       const first_time =
         element.firstElementChild.firstElementChild?.shadowRoot === null;
