@@ -8,7 +8,11 @@ Add Experimental Typst Support for SiYuan Note.
 
 ## 0.1.0 Update (this fork)
 
-- **Document-level Typst mode**: set the document custom attribute **`custom-typstmath`** to `1`
+- **Two render modes** (plugin-level; toggle via the top-bar icon or `__typstRenderMode.set("typst-first")`):
+  - **`katex-first` (default)**: every document uses KaTeX; a document opts into Typst with `custom-typstmath=1`
+  - **`typst-first`**: every document uses Typst; a document opts back into KaTeX with `custom-katexmath=1`
+  - Regardless of mode, `\t{}` / `\traw{}` prefixed content always renders with Typst (explicit intent wins)
+- **Document-level switch**: set the document custom attribute **`custom-typstmath`** to `1`
   (Document properties → Custom attributes). Every formula in that document (block/inline, no `\t`
   prefix needed) is rendered by Typst; the attribute is invisible, never touches the content and
   leaves no residue on export. Remove it to restore KaTeX.

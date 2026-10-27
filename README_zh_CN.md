@@ -9,7 +9,11 @@
 
 ## 0.1.0 更新（本 fork）
 
-- **文档级 Typst 开关**：给文档加自定义属性 **`custom-typstmath`**（值 `1`）——
+- **两个渲染档位**（插件级，顶栏图标点击切换，或控制台 `__typstRenderMode.set("typst-first")`）：
+  - **`katex-first`（默认）**：全部文档用 KaTeX；文档加自定义属性 `custom-typstmath=1` 才用 Typst
+  - **`typst-first`**：全部文档用 Typst；文档加 `custom-katexmath=1` 才用 KaTeX
+  - 无论哪档，公式内容带 `\t{}` / `\traw{}` 前缀时**一律 Typst**（显式意图优先）
+- **文档级开关**：给文档加自定义属性 **`custom-typstmath`**（值 `1`）——
   打开「文档属性」→「自定义属性」添加即可，该文档内**所有**公式（块级/行内，无需 `\t` 前缀）
   都由 Typst 渲染；属性不可见、不影响正文、导出不带残留。删除属性即恢复 KaTeX。
   （兼容旧方式：正文头部写 `<!-- typst-math -->`，但会留下一个可见的 HTML 块，不推荐）

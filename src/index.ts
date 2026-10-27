@@ -200,28 +200,45 @@ export default class TypstPlugin extends Plugin {
     // 文档是否启用 typst-math 的判定缓存。注册表的 canRender 会在
     // loaded-protyle-static（标记同步时机）之前被调用，此时属性尚未写入，
     // 因此需要按需直接检测头部标记并缓存结果。
+    // ── 渲染档位 ───────────────────────────────────────────────────────────────
+    // katex-first：默认 KaTeX；文档加 custom-typstmath 才用 Typst
+    // typst-first：默认 Typst；文档加 custom-katexmath 才用 KaTeX
+    // 无论哪档，公式内容带 \t{} / \traw{} 前缀时一律 Typst（显式意图优先）
+    type RenderMode = "katex-first" | "typst-first";
+    let render_mode: RenderMode = "katex-first";
+    try {
+      const saved = await this.loadData("settings.json");
+      if (saved && (saved.mode === "katex-first" || saved.mode === "typst-first")) {
+        render_mode = saved.mode;
+      }
+    } catch (e) {
+      console.warn("[typst] 读取渲染档位失败，使用默认 katex-first", e);
+    }
+
     const typst_doc_cache = new WeakMap<HTMLElement, boolean>();
     const is_typst_doc_root = (wysiwyg: HTMLElement | null): boolean => {
       if (!wysiwyg) {
         return false;
       }
-      if (wysiwyg.getAttribute("data-typst-math") === "1") {
-        return true;
+      const attr_on = (name: string) => {
+        const v = wysiwyg.getAttribute(name);
+        return v !== null && v !== "0" && v !== "false";
+      };
+      // 文档级反向覆盖优先
+      if (attr_on("custom-katexmath")) {
+        return false;
       }
-      // 首选：文档自定义属性 custom-typstmath（设置 → 文档属性 → 自定义属性，完全不可见）
-      // 这是推荐的开启方式，不污染正文。
-      const attr = wysiwyg.getAttribute("custom-typstmath");
-      if (attr !== null && attr !== "0" && attr !== "false") {
+      if (attr_on("custom-typstmath")) {
         return true;
       }
       const cached = typst_doc_cache.get(wysiwyg);
       if (cached !== undefined) {
-        return cached;
+        return cached || render_mode === "typst-first";
       }
       // 兼容旧方式：正文头部写 <!-- typst-math -->（段落或 HTML 块）
-      const enabled = find_marker_block(wysiwyg) !== null;
-      typst_doc_cache.set(wysiwyg, enabled);
-      return enabled;
+      const marker = find_marker_block(wysiwyg) !== null;
+      typst_doc_cache.set(wysiwyg, marker);
+      return marker || render_mode === "typst-first";
     };
 
     const sync_typst_math_flag = (wysiwyg: HTMLElement | null | undefined) => {
@@ -229,13 +246,8 @@ export default class TypstPlugin extends Plugin {
         return;
       }
       const marker_el = find_marker_block(wysiwyg);
-      // 开启方式有两种：文档属性 custom-typstmath，或正文头部标记块
-      // 注意：不能调用 is_typst_doc_root（它会读 data-typst-math，导致关闭后仍为开启）
-      const attr_value = wysiwyg.getAttribute("custom-typstmath");
-      const attr_enabled =
-        attr_value !== null && attr_value !== "0" && attr_value !== "false";
-      const enabled = marker_el !== null || attr_enabled;
-      typst_doc_cache.set(wysiwyg, enabled);
+      // 是否走 Typst 由档位 + 文档属性共同决定（见 is_typst_doc_root）
+      const enabled = is_typst_doc_root(wysiwyg);
       // 标记块打属性，供 CSS 隐藏（内容仍保留，仅视觉隐藏）
       wysiwyg
         .querySelectorAll(`[${MARKER_ATTR}]`)
@@ -248,15 +260,60 @@ export default class TypstPlugin extends Plugin {
         if (current !== "1") {
           wysiwyg.setAttribute("data-typst-math", "1");
           console.log(
-            marker_el
-              ? "[typst] 本文档启用全局 Typst 渲染（<!-- typst-math -->）"
-              : "[typst] 本文档启用全局 Typst 渲染（custom-typstmath）",
+            `[typst] 本文档启用 Typst 渲染（${
+              marker_el ? "<!-- typst-math -->" : render_mode
+            }）`,
           );
         }
       } else if (current !== null) {
         wysiwyg.removeAttribute("data-typst-math");
       }
     };
+
+    // 切换档位：保存 + 重扫所有已打开文档
+    const set_render_mode = async (mode: RenderMode) => {
+      if (mode !== "katex-first" && mode !== "typst-first") {
+        return;
+      }
+      render_mode = mode;
+      try {
+        await this.saveData("settings.json", { mode });
+      } catch (e) {
+        console.warn("[typst] 保存渲染档位失败", e);
+      }
+      document.querySelectorAll<HTMLElement>(".protyle-wysiwyg").forEach((w) => {
+        sync_typst_math_flag(w);
+        scan_element(w);
+      });
+      if (typeof (window as any).showMessage === "function") {
+        (window as any).showMessage(
+          `Typst 渲染档位：${mode === "typst-first" ? "typst-first（默认 Typst）" : "katex-first（默认 KaTeX）"}`,
+        );
+      }
+    };
+    // 供控制台/自动化切换与查询
+    (window as any).__typstRenderMode = {
+      get: () => render_mode,
+      set: (m: RenderMode) => set_render_mode(m),
+    };
+    // 顶栏按钮：点击切换档位（API 不存在时静默跳过）
+    try {
+      const add_top_bar = (this as any).addTopBar;
+      if (typeof add_top_bar === "function") {
+        const bar = add_top_bar.call(this, {
+          icon: "iconMath",
+          title: "Typst 渲染档位（点击切换）",
+          callback: () => {
+            void set_render_mode(render_mode === "katex-first" ? "typst-first" : "katex-first");
+          },
+        });
+        if (bar && typeof bar.setAttribute === "function") {
+          bar.setAttribute("data-typst-mode", render_mode);
+        }
+      }
+    } catch (e) {
+      console.warn("[typst] 顶栏按钮不可用", e);
+    }
     const sync_typst_math_flag_of_protyle = (p: any) =>
       sync_typst_math_flag(p?.wysiwyg?.element);
 
