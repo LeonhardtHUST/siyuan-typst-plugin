@@ -682,6 +682,9 @@ $pin("l1")${typst_content}$
             return true;
           } catch (e) {
             console.warn("[typst] 注册表渲染失败，回退 KaTeX:", e);
+            // 清掉渲染哈希：否则后续复扫会因"哈希未变"被判为已渲染而跳过，
+            // 该节点将永久停留在 KaTeX 结果上。
+            context.element.removeAttribute("data-render-typst");
             // 自愈：瞬时故障（如换池失败）恢复后重新接管该文档，避免整页停留在 KaTeX。
             // 同一文档 3 秒内最多重试一次，防止故障持续时形成死循环。
             try {
