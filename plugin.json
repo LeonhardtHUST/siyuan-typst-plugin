@@ -1,12 +1,16 @@
 {
   "name": "siyuan-typst-plugin",
-  "author": "Clouder0",
-  "url": "https://github.com/clouder0/siyuan-typst-plugin",
-  "version": "0.0.9",
+  "author": "Clouder0, LeonhardtHUST",
+  "url": "https://github.com/LeonhardtHUST/siyuan-typst-plugin",
+  "version": "0.1.0",
   "minAppVersion": "3.0.12",
   "disabledInPublish": true,
-  "backends": ["all"],
-  "frontends": ["all"],
+  "backends": [
+    "all"
+  ],
+  "frontends": [
+    "all"
+  ],
   "displayName": {
     "default": "Typst Plugin",
     "zh_CN": "Typst 插件"
@@ -20,7 +24,9 @@
     "zh_CN": "README_zh_CN.md"
   },
   "funding": {
-    "custom": [""]
+    "custom": [
+      ""
+    ]
   },
   "keywords": []
 }

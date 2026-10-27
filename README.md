@@ -6,6 +6,25 @@ Add Experimental Typst Support for SiYuan Note.
 
 **This is highly experimental and unstable at current state, relying on  SiYuan Note's DOM tree structure which is not guaranteed to be stable. Before SiYuan's Custom Inline Element feature is implemented, no better solution is possible. USE AT YOUR OWN RISK.**
 
+## 0.1.0 Update (this fork)
+
+- **Document-level Typst mode**: put `<!-- typst-math -->` in the document header (first non-empty
+  paragraph) — every formula in that document (block/inline, no `\t` prefix needed) is rendered by
+  Typst, and the marker paragraph is hidden automatically. Remove the marker to restore KaTeX.
+- **Zero-KaTeX mode**: with the `math-renderer-registry` patch from
+  [siyuan-patch](https://github.com/LeonhardtHUST/siyuan-patch), Typst claims formulas *before*
+  KaTeX runs — KaTeX CSS/JS is never loaded, single render, no duplicate work. On stock SiYuan the
+  plugin falls back to the original DOM takeover (unchanged behaviour).
+- **CJK inside formulas**: bundled full NotoSerifCJKsc (42246 codepoints), so labels like
+  `"Def. 4.3.1 (酉内积与酉空间)"` no longer render as tofu.
+- **Export**: HTML export bakes formulas into inline SVG (self-contained); PDF via browser print
+  includes Typst vector formulas.
+- **Known limits**: LaTeX-syntax formulas show compile errors in `typst-math` documents (by design);
+  exported HTML size grows with formula count (inline SVG); desktop PDF preview options re-render
+  falls back to the original behaviour.
+
+## Usage
+
 Just write using normal Math Block, but wrap it with `\t{typst content}`, for example:
 
 ```

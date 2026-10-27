@@ -7,6 +7,21 @@
 
 **该项目高度实验性，依赖于思源笔记的 DOM 结构而非稳定 API，可能存在兼容性问题。在思源笔记官方的 Custom Inline Element 功能实现前，可能并没有更好的实现方案。请自行斟酌使用风险。**
 
+## 0.1.0 更新（本 fork）
+
+- **文档级 Typst 开关**：在文档头部（首个非空段落）写入 `<!-- typst-math -->`，该文档内**所有**公式
+  （块级/行内，无需 `\t` 前缀）都由 Typst 渲染；标记段落自动隐藏。删除标记即恢复 KaTeX。
+- **KaTeX 零开销模式**：配合 [siyuan-patch](https://github.com/LeonhardtHUST/siyuan-patch) 的
+  `math-renderer-registry` 补丁，Typst 在 KaTeX 之前认领公式——KaTeX 的 CSS/JS **完全不会加载**，
+  一次渲染、无二次冗余（官方思源上自动降级为原有 DOM 接管，行为不变）。
+- **公式内中文**：自托管全量 NotoSerifCJKsc（cmap 42246 码点），
+  `"Def. 4.3.1 (酉内积与酉空间)"` 这类中文标签不再出现豆腐块。
+- **导出**：导出 HTML 会把公式烘焙为内联 SVG（产物自包含）；PDF 用浏览器打印即包含 Typst 矢量公式。
+- **已知限制**：`typst-math` 文档中 LaTeX 语法公式会显示编译错误（设计如此）；
+  导出 HTML 体积随公式数量增长（内联 SVG）；桌面版 PDF 导出的预览选项变更回退为原始行为。
+
+## 使用
+
 使用正常的数学公式块，将 Typst 内容包裹在 `\t{typst content}` 中，例如：
 
 ```
