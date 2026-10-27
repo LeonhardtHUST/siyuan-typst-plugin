@@ -36,6 +36,17 @@ export default class TypstPlugin extends Plugin {
         .replace("0.", prefix || "");
     };
 
+    // 显式字体栈 + math.text 规则：公式内中文渲染的两个必要条件。
+    // 1) 字体集需随插件加载（见 init_context 的 preloadFontAssets），且需用全量
+    //    NotoSerifCJKsc（typst-dev-assets 的子集缺"酉"等非高频字）。
+    // 2) 数学模式内的引号文本（如 "Def. 4.3.1 (酉空间与酉变换)"）是单个 run：
+    //    以拉丁字符开头时整串会选中拉丁字体、不做逐字回退，中文渲染为豆腐块。
+    //    `#show math.text: set text(font: ...)` 把字体栈下推到该元素，中文才会落到 Noto。
+    //    纯 CJK 开头的 run 走默认回退本就能正确选中 Noto，因此这两条互补。
+    // 块级与行内两个渲染函数共用，须定义在公共作用域。
+    const cjkTextRule = `#set text(font: ("Libertinus Serif", "Noto Serif CJK SC"))
+#show math.text: set text(font: ("Libertinus Serif", "Noto Serif CJK SC"))`;
+
     const lru_cache = new QuickLRU<string, string>({ maxSize: 1024 });
 
     let context = {
@@ -48,9 +59,18 @@ export default class TypstPlugin extends Plugin {
         compiler.init({
           // 胶水 JS（打包进本插件）与 wasm 必须来自同一次 typst.ts 构建（0.6.1-rc3），
           // wasm-bindgen 符号按构建变化，跨版本会产生 LinkError。
-          // wasm 由 scripts/fetch-wasm.mjs 自托管到插件目录，不再依赖未锁版本的 CDN。
+          // wasm 与 CJK 字体由 scripts/fetch-assets.mjs 自托管到插件目录，不依赖 CDN。
           getModule: () => `/plugins/${this.name}/wasm/typst_ts_web_compiler_bg.wasm`,
-          beforeBuild: [preloadFontAssets()],
+          // 原实现不传参数，不加载任何远程字体：公式内引用的中文（如 "Def. 4.3.1 (酉空间)"）
+          // 因编译器缺 CJK 字体渲染为豆腐块。必须同时加载 text 与 cjk 两集：
+          // 加载字体集会替换编译器默认字体，只装 cjk（无数学字体）会令全部公式
+          // 报 "current font does not support math" 并产出空文档。
+          beforeBuild: [
+            preloadFontAssets({
+              assets: ["text", "cjk"],
+              assetUrlPrefix: `/plugins/${this.name}/fonts/`,
+            }),
+          ],
         }),
         renderer.init({
           getModule: () => `/plugins/${this.name}/wasm/typst_ts_renderer_bg.wasm`,
@@ -143,6 +163,7 @@ ${typst_content}
         : `
 #set page(height: auto, width: auto, margin: 0pt)
 #set text(size: 13pt)
+${cjkTextRule}
 
 $ ${typst_content} $
 `;
@@ -256,6 +277,7 @@ ${typst_content}
       const inlineMathTemplate = `
 #set page(height: auto, width: auto, margin: 0pt)
 #set text(size: 13pt)
+${cjkTextRule}
 
 #let s = state("t", (:))
 
