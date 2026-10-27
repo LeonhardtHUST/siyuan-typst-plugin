@@ -9,7 +9,7 @@
   "license": "GPL-3.0-only",
   "scripts": {
     "dev": "cross-env NODE_ENV=development VITE_SOURCEMAP=inline vite build --watch",
-    "build": "node scripts/fetch-wasm.mjs && cross-env NODE_ENV=production vite build",
+    "build": "node scripts/fetch-wasm.mjs && cross-env NODE_ENV=production vite build && node scripts/check-abi.mjs",
     "fetch-wasm": "node scripts/fetch-wasm.mjs",
     "make-link": "bunx make-link",
     "make-link-win": "bunx make-lin-win",
@@ -41,6 +41,8 @@
   ],
   "dependencies": {
     "@myriaddreamin/typst-all-in-one.ts": "0.6.1-rc3",
+    "@myriaddreamin/typst-ts-renderer": "0.6.1-rc3",
+    "@myriaddreamin/typst-ts-web-compiler": "0.6.1-rc3",
     "@myriaddreamin/typst.ts": "0.6.1-rc3",
     "node-object-hash": "^3.1.1",
     "quick-lru": "^7.2.0",
