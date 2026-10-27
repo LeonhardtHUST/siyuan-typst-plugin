@@ -229,7 +229,13 @@ export default class TypstPlugin extends Plugin {
         return;
       }
       const marker_el = find_marker_block(wysiwyg);
-      typst_doc_cache.set(wysiwyg, marker_el !== null);
+      // 开启方式有两种：文档属性 custom-typstmath，或正文头部标记块
+      // 注意：不能调用 is_typst_doc_root（它会读 data-typst-math，导致关闭后仍为开启）
+      const attr_value = wysiwyg.getAttribute("custom-typstmath");
+      const attr_enabled =
+        attr_value !== null && attr_value !== "0" && attr_value !== "false";
+      const enabled = marker_el !== null || attr_enabled;
+      typst_doc_cache.set(wysiwyg, enabled);
       // 标记块打属性，供 CSS 隐藏（内容仍保留，仅视觉隐藏）
       wysiwyg
         .querySelectorAll(`[${MARKER_ATTR}]`)
@@ -238,10 +244,14 @@ export default class TypstPlugin extends Plugin {
         marker_el.setAttribute(MARKER_ATTR, "1");
       }
       const current = wysiwyg.getAttribute("data-typst-math");
-      if (marker_el) {
+      if (enabled) {
         if (current !== "1") {
           wysiwyg.setAttribute("data-typst-math", "1");
-          console.log("[typst] 本文档启用全局 Typst 渲染（<!-- typst-math -->）");
+          console.log(
+            marker_el
+              ? "[typst] 本文档启用全局 Typst 渲染（<!-- typst-math -->）"
+              : "[typst] 本文档启用全局 Typst 渲染（custom-typstmath）",
+          );
         }
       } else if (current !== null) {
         wysiwyg.removeAttribute("data-typst-math");
