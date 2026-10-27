@@ -54,6 +54,29 @@ export default class TypstPlugin extends Plugin {
       renderer: createTypstRenderer(),
     };
 
+    // 字体二进制做内存缓存：typst.ts 的 loadedFonts 是 per-builder 的，
+    // 每次换池重初始化都会重新 fetch 全部字体（含 24.5MB 全量 Noto），
+    // 在高并发渲染下极易 Failed to fetch。缓存后重初始化零网络开销。
+    const font_bytes_cache = new Map<string, Promise<Uint8Array>>();
+    const cached_font_fetcher = async (url: string) => {
+      let pending = font_bytes_cache.get(url);
+      if (!pending) {
+        pending = fetch(url).then(async (res) => {
+          if (!res.ok) {
+            throw new Error(`字体加载失败 ${url}: HTTP ${res.status}`);
+          }
+          return new Uint8Array(await res.arrayBuffer());
+        });
+        // 失败时清除缓存，允许后续重试
+        pending.catch(() => font_bytes_cache.delete(url));
+        font_bytes_cache.set(url, pending);
+      }
+      const bytes = await pending;
+      return new Response(bytes, {
+        headers: { "content-type": "application/octet-stream" },
+      });
+    };
+
     const init_context = async ({ compiler, renderer }) => {
       await Promise.all([
         compiler.init({
@@ -69,6 +92,7 @@ export default class TypstPlugin extends Plugin {
             preloadFontAssets({
               assets: ["text", "cjk"],
               assetUrlPrefix: `/plugins/${this.name}/fonts/`,
+              fetcher: cached_font_fetcher,
             }),
           ],
         }),
@@ -103,16 +127,99 @@ export default class TypstPlugin extends Plugin {
     };
     const protyle_observer_map = new Map<object, MutationObserver>();
     let current_parsed = 0;
+    // 换池（备份编译器热切换）必须串行：并行渲染下多个任务会同时到达阈值，
+    // 无锁时重复初始化同一份 _backup_context，拿到半初始化实例导致 add_source undefined。
+    let swap_in_flight: Promise<void> | null = null;
+    const maybe_swap_context = async () => {
+      current_parsed += 1;
+      if (current_parsed < 100) {
+        return;
+      }
+      if (swap_in_flight) {
+        await swap_in_flight;
+        return;
+      }
+      swap_in_flight = (async () => {
+        current_parsed = 0;
+        const backup = await get_backup_context();
+        context.compiler = backup.compiler;
+        context.renderer = backup.renderer;
+      })().finally(() => {
+        swap_in_flight = null;
+      });
+      await swap_in_flight;
+    };
+
+    // 文档级开关标记：文档头部（首个非空段落）为 `<!-- typst-math -->` 时，
+    // 该文档内所有公式块（无论是否带 \t 前缀）都交由 Typst 渲染。
+    // 允许标记前存在空段落；遇到第一个有实际内容的非标记块即停止查找（标记必须在"头部"）。
+    const TYPST_MATH_MARKER = /^<!--\s*typst-math\s*-->$/;
+    const MARKER_ATTR = "data-typst-math-marker";
+    // 思源在块内附带零宽字符占位（protyle-attr 的 \u200b），trim() 不会清除，
+    // 必须显式剥掉，否则标记匹配永远失败。
+    const clean_text = (s: string | null | undefined) =>
+      (s || "").replace(/[\u200b\u200c\u200d\ufeff]/g, "").trim();
+
+    const sync_typst_math_flag = (wysiwyg: HTMLElement | null | undefined) => {
+      if (!wysiwyg) {
+        return;
+      }
+      let marker_el: HTMLElement | null = null;
+      for (const el of Array.from(wysiwyg.children).slice(0, 5)) {
+        const text = clean_text(el.textContent);
+        if (TYPST_MATH_MARKER.test(text)) {
+          marker_el = el as HTMLElement;
+          break;
+        }
+        // 跳过空段落，遇到第一个有内容的块则停止（标记必须位于文档头部）
+        if (text !== "") {
+          break;
+        }
+      }
+      // 标记块打属性，供 CSS 隐藏（内容仍保留，仅视觉隐藏）
+      wysiwyg
+        .querySelectorAll(`[${MARKER_ATTR}]`)
+        .forEach((el) => el.removeAttribute(MARKER_ATTR));
+      if (marker_el) {
+        marker_el.setAttribute(MARKER_ATTR, "1");
+      }
+      const current = wysiwyg.getAttribute("data-typst-math");
+      if (marker_el) {
+        if (current !== "1") {
+          wysiwyg.setAttribute("data-typst-math", "1");
+          console.log("[typst] 本文档启用全局 Typst 渲染（<!-- typst-math -->）");
+        }
+      } else if (current !== null) {
+        wysiwyg.removeAttribute("data-typst-math");
+      }
+    };
+    const sync_typst_math_flag_of_protyle = (p: any) =>
+      sync_typst_math_flag(p?.wysiwyg?.element);
+
+    // 解析节点应由 Typst 渲染的内容；不适用时返回 null。
+    // 优先级：\traw{} > \t{} > 文档级 typst-math 开关（内容原样，无需前缀）。
+    const resolve_typst = (
+      element: HTMLElement,
+    ): { raw: boolean; content: string } | null => {
+      const raw_content = element.getAttribute("data-content") || "";
+      if (raw_content.startsWith("\\traw{") && raw_content.endsWith("}")) {
+        return { raw: true, content: decode(raw_content.slice(6, -1)) };
+      }
+      if (raw_content.startsWith("\\t{") && raw_content.endsWith("}")) {
+        return { raw: false, content: decode(raw_content.slice(3, -1)) };
+      }
+      const wysiwyg = element.closest(".protyle-wysiwyg") as HTMLElement | null;
+      if (wysiwyg && wysiwyg.getAttribute("data-typst-math") === "1") {
+        return { raw: false, content: decode(raw_content) };
+      }
+      return null;
+    };
+
     const render_block_once = async (element: HTMLElement) => {
       await wasmReady;
       // console.log("block", element);
-      const raw_content = element.getAttribute("data-content");
-      const is_raw_typst =
-        raw_content.startsWith("\\traw{") && raw_content.endsWith("}");
-      const is_math_typst =
-        raw_content.startsWith("\\t{") && raw_content.endsWith("}");
-      const is_typst = is_raw_typst || is_math_typst;
-      if (!is_typst) {
+      const resolved = resolve_typst(element);
+      if (!resolved) {
         if (element.getAttribute("data-render-typst") !== null) {
           // remove previous typst content
           element.removeAttribute("data-render-typst");
@@ -120,9 +227,8 @@ export default class TypstPlugin extends Plugin {
         }
         return;
       }
-      const typst_content = is_raw_typst
-        ? decode(raw_content.slice(6, -1))
-        : decode(raw_content.slice(3, -1));
+      const is_raw_typst = resolved.raw;
+      const typst_content = resolved.content;
       const content_hash = SimpleHash.djb2(typst_content)
         .toString()
         .slice(0, 16);
@@ -168,14 +274,7 @@ ${cjkTextRule}
 $ ${typst_content} $
 `;
       const dest = `/tmp/${randstr()}.typ`;
-      current_parsed += 1;
-      if (current_parsed >= 100) {
-        // console.log("Switch to backup compiler!");
-        current_parsed = 0;
-        const backup = await get_backup_context();
-        context.compiler = backup.compiler;
-        context.renderer = backup.renderer;
-      }
+      await maybe_swap_context();
       const compiler = context.compiler;
       const renderer = context.renderer;
       compiler.addSource(dest, displayMathTemplate);
@@ -192,6 +291,11 @@ $ ${typst_content} $
           )
           .join("\n");
         shadowRoot.innerHTML = `<div style="color: red;">${error_string}</div>`;
+        // 编译失败时 result 为空，继续往下会令 renderer.manipulateData 收到 undefined
+        // 并抛 TypeError；错误信息已展示，此处缓存后直接返回（与行内分支一致）。
+        compiler.unmapShadow(dest);
+        lru_cache.set(content_hash, shadowRoot.innerHTML);
+        return;
       }
       const vec = result.result!;
       const svg = await renderer.runWithSession(async (session) => {
@@ -226,13 +330,8 @@ $ ${typst_content} $
     const render_inline_once = async (element: HTMLElement) => {
       await wasmReady;
       // console.log("inline", element);
-      const raw_content = element.getAttribute("data-content");
-      const is_raw_typst =
-        raw_content.startsWith("\\traw{") && raw_content.endsWith("}");
-      const is_math_typst =
-        raw_content.startsWith("\\t{") && raw_content.endsWith("}");
-      const is_typst = is_raw_typst || is_math_typst;
-      if (!is_typst) {
+      const resolved = resolve_typst(element);
+      if (!resolved) {
         if (element.getAttribute("data-render-typst") !== null) {
           // clear previous typst content
           element.removeAttribute("data-render-typst");
@@ -241,9 +340,8 @@ $ ${typst_content} $
         }
         return;
       }
-      const typst_content = is_raw_typst
-        ? decode(raw_content.slice(6, -1))
-        : decode(raw_content.slice(3, -1));
+      const is_raw_typst = resolved.raw;
+      const typst_content = resolved.content;
       const content_hash = SimpleHash.djb2(typst_content)
         .toString()
         .slice(0, 16);
@@ -298,14 +396,7 @@ $pin("l1")${typst_content}$
         `;
       const template = is_raw_typst ? inlineRawTemplate : inlineMathTemplate;
       const dest = `/tmp/${randstr()}.typ`;
-      current_parsed += 1;
-      if (current_parsed >= 100) {
-        console.log("Switch to backup compiler!");
-        current_parsed = 0;
-        const backup = await get_backup_context();
-        context.compiler = backup.compiler;
-        context.renderer = backup.renderer;
-      }
+      await maybe_swap_context();
       const compiler = context.compiler;
       const renderer = context.renderer;
       compiler.addSource(dest, template);
@@ -369,10 +460,10 @@ $pin("l1")${typst_content}$
     };
     // 修复链路 B1：v3.8.8 的 setHTML 先将内容写入 DOM，之后才派发 loaded-protyle-static，
     // 只靠事后 MutationObserver 永远收不到初始内容的"新增节点"记录，必须主动扫描存量节点。
-    const inline_selector =
-      "span[data-type='inline-math'][data-content^='\\\\t'][data-content$='}']";
-    const block_selector =
-      "div.render-node[data-type='NodeMathBlock'][data-content^='\\\\t'][data-content$='}']";
+    // 选择器匹配全部公式节点（不再用 \t 前缀过滤）：是否由 Typst 渲染交给 resolve_typst 判定，
+    // 这样文档级 typst-math 开关才能接管不带前缀的公式；非目标节点在渲染函数首行即返回。
+    const inline_selector = "span[data-type='inline-math']";
+    const block_selector = 'div.render-node[data-type="NodeMathBlock"]';
 
     const scan_element = (root: ParentNode) => {
       if (!root || typeof (root as Element).querySelectorAll !== "function") {
@@ -504,7 +595,11 @@ $pin("l1")${typst_content}$
       if (!p?.contentElement || protyle_observer_map.has(p)) {
         return;
       }
-      const observer = new MutationObserver(process_mutations);
+      const observer = new MutationObserver((mutations) => {
+        // 标记段落可能被编辑（增删开关），每批变更同步一次开关状态
+        sync_typst_math_flag_of_protyle(p);
+        process_mutations(mutations);
+      });
       observer.observe(p.contentElement, {
         childList: true,
         subtree: true,
@@ -516,6 +611,7 @@ $pin("l1")${typst_content}$
 
     this.eventBus.on("loaded-protyle-static", (event) => {
       const p = event.detail.protyle;
+      sync_typst_math_flag_of_protyle(p);
       attach_observer(p);
       // 存量扫描：事件派发时内容已在 DOM 中
       scan_element(p.wysiwyg?.element ?? p.contentElement);
@@ -525,6 +621,7 @@ $pin("l1")${typst_content}$
     this.eventBus.on("loaded-protyle-dynamic", (event: any) => {
       const p = event.detail?.protyle;
       if (p?.wysiwyg?.element) {
+        sync_typst_math_flag_of_protyle(p);
         scan_element(p.wysiwyg.element);
       }
     });
@@ -536,6 +633,7 @@ $pin("l1")${typst_content}$
       if (!p) {
         return;
       }
+      sync_typst_math_flag_of_protyle(p);
       attach_observer(p);
       scan_element(p.wysiwyg?.element ?? p.contentElement);
     });
@@ -554,12 +652,36 @@ $pin("l1")${typst_content}$
     // 全局兜底扫描：覆盖所有"事件早于插件就绪"的已打开文档
     wasmReady
       .then(() => {
+        document
+          .querySelectorAll<HTMLElement>(".protyle-wysiwyg")
+          .forEach(sync_typst_math_flag);
         scan_element(document.body);
         // 思源懒渲染回填占位节点需要时间，稍后复扫一次
-        setTimeout(() => scan_element(document.body), 1500);
+        setTimeout(() => {
+          document
+            .querySelectorAll<HTMLElement>(".protyle-wysiwyg")
+            .forEach(sync_typst_math_flag);
+          scan_element(document.body);
+        }, 1500);
       })
       .catch((e) => {
         console.error("[typst] wasm init failed:", e);
       });
+
+    // 样式：
+    // 1) typst-math 文档中，尚未接管的公式先隐藏 KaTeX 内容（含其报错红字），避免闪烁；
+    // 2) 隐藏文档首段的 <!-- typst-math --> 标记段落本身。
+    const style = document.createElement("style");
+    style.id = "siyuan-typst-plugin-style";
+    style.textContent = `
+.protyle-wysiwyg[data-typst-math="1"] div.render-node[data-type="NodeMathBlock"]:not([data-render-typst]),
+.protyle-wysiwyg[data-typst-math="1"] span[data-type="inline-math"]:not([data-render-typst]) {
+  color: transparent !important;
+}
+.protyle-wysiwyg[data-typst-math="1"] [data-typst-math-marker="1"] {
+  display: none;
+}`;
+    document.getElementById(style.id)?.remove();
+    document.head.append(style);
   }
 }
