@@ -17,7 +17,11 @@
   - 构建产物与原版逐符号等价（胶水 import key 220 个一致，compiler 80 / renderer 153
     imports 全满足）
 - ⬜ M2 待启动（M2-2 已部分提前交付）
-- ⬜ M3 待启动
+- ⬜ M3 已被第二部分 P1 路线取代（保留作备选，见 M3 节注记）
+- 📋 **第二部分（全局注入路线）已定案待执行**（2026-10-27）：核心为 siyuan-patch
+  仓库的 Claim-at-Filter Math Renderer Registry——启用 Typst 时 KaTeX 零执行
+  （连 katex.min.js 都不发起请求），覆盖编辑器/公式编辑弹窗/导出预览全部前端路径，
+  目标"一经注入只有一次渲染"。详见第二部分。
 
 ---
 
@@ -27,7 +31,8 @@
 |---|---|---|---|---|
 | **M1 复活** ✅ | 在 SiYuan 3.8.8 上恢复可用 | v0.0.9 | 2–3 人日 | §5.1（P0） |
 | **M2 工程化** | 自检、CI、防再漂移 | v0.1.0 | 3–5 人日 | §5.1–5.2（P1/P2） |
-| **M3 归正** | 迁移到官方 NodeCustomBlock | v0.2.0 | 1–2 周 | §5.3（P3） |
+| **M3 归正** | 迁移到官方 NodeCustomBlock（已被第二部分 P1 取代，保留备选） | v0.2.0 | 1–2 周 | §5.3（P3） |
+| **第二部分 P0–P5** | 全局 Typst 注入（跨 siyuan-patch 仓库，"一经注入只有一次渲染"） | plugin v0.3.x + patched 镜像 | 见第二部分 | — |
 
 **统一验收标准**（每个里程碑合入前必须过）：
 1. 端到端：真实文档（532 块级 + 2616 行内）在 3.8.8 无头浏览器中全量渲染，`.katex-error` 计数 = 0，控制台 pageerror = 0；
@@ -180,7 +185,11 @@ Playwright 容器 + SiYuan 3.8.8 容器编排：装载固定测试文档，断�
 
 ---
 
-## M3：v0.2.0 —— 迁移到官方 NodeCustomBlock 机制
+## M3：v0.2.0 —— 迁移到官方 NodeCustomBlock 机制【已被第二部分 P1 取代】
+
+> 2026-10-27 修订：第二部分的 Math Renderer Registry 在**不改数据格式**的前提下覆盖
+> 块级+行内全部调用点（含导出预览与编辑弹窗），优先级高于本节。NodeCustomBlock 仅在
+> 放弃 patch 路线时（如不愿长期维护 fork 且上游 PR 未被接受）再评估。以下保留作备选参考。
 
 **背景**（报告 §5.3，源码已核实）：SiYuan 3.8.8 内置 `app/src/plugin/customBlockRender.ts`，提供注册根容器、增删观察、**激活时全量重渲染**（`activateCustomBlockPlugin(pluginName)`——天然解决 M1-2 的晚加载时序）、dispose 回调、`setContent` 回写、编辑器事件隔离、渲染失败 fallback。
 
@@ -197,11 +206,150 @@ Playwright 容器 + SiYuan 3.8.8 容器编排：装载固定测试文档，断�
 
 ---
 
+# 第二部分：全局 Typst 注入（跨仓库路线，2026-10-27 定案）
+
+> 目标：公式编辑窗口、PDF 导出等思源全场景由 Typst 渲染器注入，达到**全局无缝的
+> Typst 公式体验**；启用 Typst 时**只有一次渲染**（KaTeX 零执行）。
+> 仓库分工：SiYuan 源码改动全部进 `LeonhardtHUST/siyuan-patch`（fork of
+> MohamedElashri/siyuan-patch：sanad 管理的 patch 集 + 全平台构建 CI，基线 v3.8.8）；
+> Typst 逻辑全部留在本插件仓库。**不合入 siyuan 主仓**，只加通用呈现管线注入点。
+
+## 2.0 注入点清单与边界（源码级确认，v3.8.8）
+
+前端 KaTeX 渲染**统一入口**为 `app/src/protyle/render/mathRender.ts`，全前端约 20 处调用：
+
+| # | 场景 | 源码位置 | 插件可否 | 归属 |
+|---|---|---|---|---|
+| 1 | 编辑器正文（块级/行内） | `processCode.ts` → mathRender | ✅ 已做（DOM 接管） | registry 后迁移 |
+| 2 | 公式编辑窗口预览 | `protyle/toolbar/index.ts`（含 katex+mathRender） | ✅ 可做（DOM 观察替换预览节点） | P2 先插件过渡，registry 后迁移 |
+| 3 | 搜索/浮窗预览 | 同 1 管线（protyle 复用） | ✅ 天然覆盖 | 补验证即可 |
+| 4 | PDF 导出预览 | `protyle/export/index.ts`（前端生成预览 + print，**会 await mathRender 的 Promise**） | ⚠️ window.open 后注入，时序脆弱 | patch（registry 顺带解决） |
+| 5 | HTML/Word 导出 | 内核 Lute 侧（Go） | ❌ 插件不可达 | P3 侦察后决策 |
+| 6 | 表格内公式 / AI agent 消息 / 移动端 outline | `tableCellRich*` / `AgentMessageRenderer` 等各自调 mathRender | ⚠️ 逐个 DOM hack 不经济 | patch 一处全解 |
+| 7 | 富文本剪贴板 / 微信导出 | `richClipboard.ts` / `wechatMath` | ❌ | patch |
+| 8 | 内核 katex 配置 | 仅 conf 文件，无渲染逻辑 | — | 无需处理 |
+
+**关键源码事实**（mathRender.ts，v3.8.8 实读）：
+- 跳过条件是 `data-render !== "true"` 的**同步过滤**，发生在函数调用瞬间（processRender 内），
+  早于任何插件代码（loaded-protyle-static 在 setHTML 末尾才派发）——这是插件无法根治
+  初始一遍 KaTeX 的硬时序约束，也是 registry 必须做成 patch 的根本原因
+- `addStyle(katex.min.css)` 在过滤**之前**执行（存在任何数学节点即加载 CSS）——registry
+  版把它移入 KaTeX 分支，全认领时连 CSS 都不加载
+- `mathRender` 返回 Promise 且导出路径会 await 它（含 `fitMathWidth` 宽度适配）——
+  渲染器的异步 Promise 可无缝并入该链，PDF 导出"画完再打印"天然成立
+- inline 分支含一组 ZWSP 光标边界处理（`insertAdjacentText`），registry 版渲染器
+  必须保留同等行为
+
+## 2.1 技术路线：Claim-at-Filter Renderer Registry
+
+**渲染器 API**（新文件 `app/src/protyle/render/mathRendererRegistry.ts`）：
+
+```ts
+interface IMathRenderContext {
+  element: HTMLElement;      // 目标节点（div[data-subtype="math"] 或 span）
+  mathContent: string;       // 原始 data-content（反转义由渲染器自理，与 KaTeX 路径一致）
+  isBlock: boolean;
+  maxWidth: boolean;         // 导出场景的宽度适配要求
+}
+interface IMathRenderer {
+  canRender(ctx: IMathRenderContext): boolean;        // 同步，过滤期调用
+  render(ctx: IMathRenderContext): Promise<boolean>;  // true=接管成功；false/异常=回退
+}
+registerMathRenderer(id: string, renderer: IMathRenderer): void
+unregisterMathRenderer(id: string): void
+```
+
+插件经 `Plugin.prototype.registerMathRenderer(id, renderer)` 注册（unload 自动反注册），
+以特性检测降级——官方版思源上自动退回现有 DOM 接管，跨版本兼容。
+（早期设计的 `ctx.source`（editor/toolbar/export）已砍掉：mathRender 无法廉价感知
+调用方，且 Typst 的认领条件只依赖元素自身。）
+
+**mathRender.ts 改造要点**（最小 diff）：
+
+1. **认领判断放进同步过滤循环**：对每个 `data-render !== "true"` 的节点先问
+   `findMathRenderer(ctx)`；认领即置 `data-render="true"` 并收集——此时 KaTeX 的
+   CSS/JS 都未加载，认领节点对 KaTeX **零成本**
+2. `addStyle`（KaTeX CSS）移入 KaTeX 分支；全认领时连 CSS 都不请求
+3. 渲染器异步执行，失败（返回 false 或抛错）→ 撤销 `data-render` → **同一次调用内**
+   回退 KaTeX（降级语义，非冗余渲染）
+4. 返回 `Promise.all([渲染器组, KaTeX 链])`，保持导出路径的 await 时序语义
+5. 保留 `isFoldedRenderContent` 过滤与 `[data-subtype="math"]` 选择器
+6. inline 的 ZWSP 边界逻辑抽成 `applyInlineMathBoundaries(el)` 导出供渲染器复用
+
+**单次渲染时序证明**：
+- 初始内容：认领发生在**第一次** mathRender 调用内部（processRender 同步段），
+  早于 KaTeX 脚本加载请求 → `katex.min.js` 网络请求计数 = 0
+- 重复调用（processRender 在各类事件中反复触发）：认领时已置 `data-render` → 全部跳过
+- 渲染器失败：恰好一次 KaTeX 降级渲染（设计语义）
+
+**否决的备选**（均有硬伤）：
+- 事件总线 hook（render-math 事件 + preventDefault）：类型化差、Promise 组合困难
+- 预注入假 `#protyleKatexScript` stub：`addScript` 按 id 去重可被利用，但会毁掉
+  所有普通文档的 KaTeX，黑魔法，仅作技术存在性记录
+- 插件侧 `data-render` 抢先认领：过滤同步先于插件代码，只能赢窄竞态，收益小
+  （registry 就绪前可选择性用作缓解）
+- NodeCustomBlock（原 M3）：只覆盖块级且需改数据格式；registry 不改格式、全覆盖
+
+## 2.2 阶段计划（每单元完成即自动 commit）
+
+**P0 — siyuan-patch 基建**（仓库：LeonhardtHUST/siyuan-patch）
+- `.github/workflows/sync-upstream.yml`：每日 cron 拉取 upstream/main → fast-forward
+  推送 origin；冲突则自动开 `sync/conflict-*` 分支并提 issue（不静默丢弃）
+- `PATCHES.md` 登记每个自有 patch 的用途；README fork 化说明
+- 触发一次 release-docker 验证 fork CI 可产出镜像（ghcr.io/LeonhardtHUST/siyuan）
+- 验收：上游有新提交次日自动同步；镜像 tag 可拉取
+- 【自动提交】
+
+**P1 — math-renderer-registry.patch**（仓库：siyuan-patch）
+- 按 §2.1 实现（registry 新文件 + mathRender.ts 改造 + Plugin API 暴露 +
+  `applyInlineMathBoundaries` 抽取）
+- **回归红线：无注册器时构建产物与上游 diff 为空**（行为逐字节一致）
+- 单测（mathRender 已有测试文件可扩展）+ e2e 断言：认领场景 `katex.min.js`
+  请求计数 = 0、`window.katex` 未定义
+- 构建含此 patch 的 docker 镜像 `typst-registry-0.1`
+- 【自动提交】
+
+**P2 — 插件适配层**（仓库：siyuan-typst-plugin）
+- `registerMathRenderer` 适配：特性检测——patched SiYuan 走官方注入点，官方 SiYuan
+  降级现有 DOM 接管（双模式并存，可配置切换）
+- 公式编辑窗口预览接管（**不依赖 P1，可先行**）：观察工具栏 DOM、输入 debounce →
+  Typst 编译 → 替换预览；typst-math 文档显示 Typst，普通文档保持 KaTeX
+- e2e 矩阵：编辑器 / 编辑弹窗 / 搜索预览 × 官方镜像 / patched 镜像
+- 【自动提交】
+
+**P3 — 导出链路**
+- PDF 导出预览经 registry 接管（依赖 §2.1-4 的 Promise 链）；导出测试文档 →
+  解析 PDF 验证矢量公式存在
+- 内核侦察：确认 HTML/Word 导出中公式的渲染位置（Lute/内核）；若需内核 patch →
+  出范围评估报告作为 P5 决策输入，**不擅自动内核**
+- 【自动提交】
+
+**P4 — 边角与移动端**
+- 表格内公式 / agent 消息 / 大纲等调用点回归（registry 应自动覆盖，逐项验证）
+- 移动端 wasm 体积与性能评估（24MB wasm + 字体可能需子集化决策）
+- 【自动提交】
+
+**P5 — 决策点（本轮不承诺执行）**
+- 内核导出 patch / registry 向 siyuan-note 提上游 PR / 换池机制根治（incr server）
+
+## 2.3 执行约定
+
+- 两个仓库各自**每单元一 commit**（自动提交），构建产物不入库
+- 新增 patch 必须先登记 `PATCHES.md`；回归红线（无注册器 diff 为空）不可破
+- 生产迁移：服务器当前 `b3log/siyuan:latest` → 切换 fork 镜像需一次容器替换（数据卷不动）
+- 上游跟随：SiYuan 每次发版 registry patch 可能冲突——sanad minor 级自动更新 +
+  sync workflow 半自动处理；大重构需手工 rebase
+- 导出根本限制：HTML/Word 内核侧导出在 P3 侦察前无法承诺
+
+---
+
 ## 分支与上游策略
 
 - 分支：`main` 跟随 fork（LeonhardtHUST），每个里程碑一条 `fix/` 或 `feat/` 分支；
 - 上游（Clouder0/siyuan-typst-plugin）约两年无更新：M1 完成后先发 fork 版本 v0.0.9（可直接推送思源集市需另行确认发布渠道），同时向上游提 PR——M1 的五项改动均为最小侵入性修复，被合入概率较高；M3 属架构迁移，以 fork 演进为主；
-- 版本节奏：v0.0.9（M1）→ v0.1.0（M2）→ v0.2.0（M3）。
+- 版本节奏：v0.0.9（M1）→ v0.1.0（M2）→ 第二部分 P0–P5 并行推进（M3 已被取代）；
+- 跨仓库分工：SiYuan 源码 patch 全部进 `LeonhardtHUST/siyuan-patch`（第二部分），
+  本仓库只持有 Typst 渲染逻辑与适配层。
 
 ## 风险清单
 
@@ -212,10 +360,13 @@ Playwright 容器 + SiYuan 3.8.8 容器编排：装载固定测试文档，断�
 | 上游不响应 PR | 修复无法回到源头 | fork 自主发版，README 注明 fork 缘由 |
 | wasm 进发行包致体积 +22MB | 集市分发体验 | Cache Storage 缓解运行时；发布体积问题在 README 说明 |
 | 思源 3.9+ DOM 再变化 | M1/M2 方案回归 | M2-3 端到端冒烟覆盖多个思源版本 |
+| registry patch 与上游冲突（第二部分） | 每次思源发版需 rebase | sync-upstream workflow + 回归红线（无注册器时构建产物与上游 diff 为空） |
+| 编辑弹窗/导出体验不达预期 | 功能回退 | registry 与 DOM 接管双模式并存，可配置切换 |
+| 内核侧导出（HTML/Word）不可达 | 导出场景残缺 | P3 侦察后单独决策，不阻塞前端路线 |
 
-## 立即可执行（本周）
+## 待启动（等指示）
 
-1. `git checkout -b fix/v0.0.9-siyuan-3.8.8-compat`
-2. 依 M1-1 → M1-5 顺序提交（每项独立 commit，便于回溯与向上游拆 PR）
-3. 用兼容性报告附录 A 的方法在本地 Docker SiYuan 3.8.8 跑统一验收
-4. 对生产环境（已部署热修的服务器）做一次"热修 → 源码版"替换回归
+- 下一执行单元：**第二部分 P0**（siyuan-patch 基建：sync-upstream workflow + PATCHES.md + fork CI 产出验证）
+- 可并行：M2-4 wasm 缓存；P2 的公式编辑弹窗预览接管（不依赖 P1）
+- 执行约定见 §2.3：每单元完成即自动 commit；新增 patch 先登记 PATCHES.md；
+  回归红线（无注册器 diff 为空）不可破
