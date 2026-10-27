@@ -60,6 +60,19 @@
 **结论**：Web 部署下"PDF"目标已通过浏览器打印天然达成（已验证）；桌面版 PDF 与 HTML
 导出属内核/独立产物范畴，收益低、成本高，按边界原则不做。
 
+### P3b 导出烘焙（2026-10-27，patch v2）
+
+按用户要求补做"导出 HTML + 桌面 PDF 预览"的 Typst 支持，实现方式为**应用内预烘焙**：
+
+- `patches/siyuan/math-renderer-registry.patch` 新增 `bakeMathForExport()`（`export/index.ts`）：
+  用当前渲染器（registry）把公式渲染为 SVG，**展平 shadow DOM** 写回 HTML → 产物自包含，
+  不依赖导出端脚本/运行时
+- 接入点：`onExport`（导出 HTML，浏览器/桌面通用）+ `renderPDF`（Electron 主窗口预取内容
+  烘焙后注入预览页；预览页选项变更触发的重渲染回退为原行为）
+- 附诊断钩子 `window.__siyuanBakeMathForExport`（供自动化验证）
+- 踩坑记录：`Protyle` 类**没有**静态 `mathRender`（那是导出页 `ProtyleMethod` 的桥），
+  误用会抛 TypeError 并被 catch 静默吞掉 → 必须直接 `import {mathRender}`
+
 ### P4 边角调用点（2026-10-27）
 
 - ✅ **表格内公式**：真实文档 5 个表格、29 个单元格公式全部渲染（29/29，0 失败，0 pageerror）。
@@ -426,3 +439,11 @@ unregisterMathRenderer(id: string): void
 - 可并行：M2-4 wasm 缓存；P2 的公式编辑弹窗预览接管（不依赖 P1）
 - 执行约定见 §2.3：每单元完成即自动 commit；新增 patch 先登记 PATCHES.md；
   回归红线（无注册器 diff 为空）不可破
+
+### P3b 导出烘焙验收（2026-10-27 21:25）
+
+- 函数级验证（`window.__siyuanBakeMathForExport`）：真实文档 9.2MB → **61.8MB**，
+  **2978 个公式内联 SVG**（3211 节点中 233 个是 `\t{` 空残桩，无法渲染，非缺陷），
+  行内公式展平修复生效（`sampleHasSvg: true`），0 KaTeX 错误
+- 已知代价：整篇导出耗时约 85s（3211 个公式）、产物增大 ~66×（内联 SVG），
+  大文档导出适用、日常小文档影响可忽略
