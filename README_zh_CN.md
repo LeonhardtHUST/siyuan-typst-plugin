@@ -9,8 +9,10 @@
 
 ## 0.1.0 更新（本 fork）
 
-- **文档级 Typst 开关**：在文档头部（首个非空段落）写入 `<!-- typst-math -->`，该文档内**所有**公式
-  （块级/行内，无需 `\t` 前缀）都由 Typst 渲染；标记段落自动隐藏。删除标记即恢复 KaTeX。
+- **文档级 Typst 开关**：给文档加自定义属性 **`custom-typstmath`**（值 `1`）——
+  打开「文档属性」→「自定义属性」添加即可，该文档内**所有**公式（块级/行内，无需 `\t` 前缀）
+  都由 Typst 渲染；属性不可见、不影响正文、导出不带残留。删除属性即恢复 KaTeX。
+  （兼容旧方式：正文头部写 `<!-- typst-math -->`，但会留下一个可见的 HTML 块，不推荐）
 - **KaTeX 零开销模式**：配合 [siyuan-patch](https://github.com/LeonhardtHUST/siyuan-patch) 的
   `math-renderer-registry` 补丁，Typst 在 KaTeX 之前认领公式——KaTeX 的 CSS/JS **完全不会加载**，
   一次渲染、无二次冗余（官方思源上自动降级为原有 DOM 接管，行为不变）。

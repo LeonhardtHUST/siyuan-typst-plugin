@@ -8,9 +8,11 @@ Add Experimental Typst Support for SiYuan Note.
 
 ## 0.1.0 Update (this fork)
 
-- **Document-level Typst mode**: put `<!-- typst-math -->` in the document header (first non-empty
-  paragraph) — every formula in that document (block/inline, no `\t` prefix needed) is rendered by
-  Typst, and the marker paragraph is hidden automatically. Remove the marker to restore KaTeX.
+- **Document-level Typst mode**: set the document custom attribute **`custom-typstmath`** to `1`
+  (Document properties → Custom attributes). Every formula in that document (block/inline, no `\t`
+  prefix needed) is rendered by Typst; the attribute is invisible, never touches the content and
+  leaves no residue on export. Remove it to restore KaTeX.
+  (Legacy: `<!-- typst-math -->` in the header still works but leaves a visible HTML block.)
 - **Zero-KaTeX mode**: with the `math-renderer-registry` patch from
   [siyuan-patch](https://github.com/LeonhardtHUST/siyuan-patch), Typst claims formulas *before*
   KaTeX runs — KaTeX CSS/JS is never loaded, single render, no duplicate work. On stock SiYuan the
