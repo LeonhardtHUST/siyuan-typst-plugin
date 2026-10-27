@@ -4,13 +4,28 @@
 > 基线：本仓库 `96852c7`（v0.0.8，构建依赖 `@myriaddreamin/typst.ts ^0.6.1-rc3`）
 > 说明：兼容性报告中的热修已在生产环境（Docker SiYuan 3.8.8，真实文档 532 块级 + 2616 行内公式）验证通过——块级 39/39、行内 278/278 渲染，控制台 0 报错。本计划把那套热修**迁回源码**，并给出后续路线。
 
+## 进度状态（2026-10-27）
+
+- ✅ **M1 v0.0.9 已完成并通过全部验收**（分支 `fix/v0.0.9-siyuan-3.8.8-compat`，9 个提交）：
+  - M1-1～M1-6 全部落地，并额外完成：胶水包显式锁定依赖（发现 typst.ts 未声明
+    `typst-ts-web-compiler` 依赖，全新 install 时胶水静默缺失）、`scripts/check-abi.mjs`
+    ABI 链接自检接入构建链（原属 M2-2，提前交付）
+  - 端到端验收：真实文档全量滚动扫描，**0 个编译错误公式、0 空渲染、0 pageerror**
+    （修复前 130 个公式因文档内伪 Typst 语法报错，已同步修复文档数据：
+    `chevron.l/r`→`angle.l/r` ×116、`varnothing`→`nothing` ×11、`\cal(`→`cal(` ×1、
+    中文文本加引号 ×2；这些是转换管道的数据缺陷，非插件问题）
+  - 构建产物与原版逐符号等价（胶水 import key 220 个一致，compiler 80 / renderer 153
+    imports 全满足）
+- ⬜ M2 待启动（M2-2 已部分提前交付）
+- ⬜ M3 待启动
+
 ---
 
 ## 0. 总览
 
 | 里程碑 | 目标 | 版本号 | 工作量估计 | 对应报告章节 |
 |---|---|---|---|---|
-| **M1 复活** | 在 SiYuan 3.8.8 上恢复可用 | v0.0.9 | 2–3 人日 | §5.1（P0） |
+| **M1 复活** ✅ | 在 SiYuan 3.8.8 上恢复可用 | v0.0.9 | 2–3 人日 | §5.1（P0） |
 | **M2 工程化** | 自检、CI、防再漂移 | v0.1.0 | 3–5 人日 | §5.1–5.2（P1/P2） |
 | **M3 归正** | 迁移到官方 NodeCustomBlock | v0.2.0 | 1–2 周 | §5.3（P3） |
 
@@ -79,6 +94,29 @@ if (!element.firstElementChild?.firstElementChild) return;
 **改法**：渲染成功后 `element.classList.remove("ft__error")`（思源在 KaTeX 失败时打上的红色标记类）。
 
 **验收**：行内公式颜色与正文一致（截图目视 + DOM 断言 `ft__error` 不存在）。
+
+### M1-6 修复公式内中文渲染（豆腐块）【新增，源码化期间发现】
+
+**现象**：公式内引号中文（如 `"Def. 4.3.1 (酉内积与酉空间)"`）渲染为豆腐块。
+
+**根因**（Node 隔离实验确认，非推测）：
+1. 数学模式内的引号文本是**单个 run**：以拉丁字符开头时整串选中拉丁字体、**不做逐字回退**；
+   纯 CJK 开头的 run 走默认回退可正常选中 Noto——所以 `"空间"` 正常而 `"Def. … (空格)"` 全豆腐。
+2. `preloadFontAssets()` 原实现**不传参数**，一个远程字体都不加载（数学字形靠 wasm 内嵌字体）。
+3. typst-dev-assets 的 NotoSerifCJKsc 是**子集**（cmap 4382 码点），"酉"等非高频字缺失。
+
+**改法**：
+1. `preloadFontAssets({ assets: ["text", "cjk"], assetUrlPrefix: "/plugins/<name>/fonts/" })`
+   —— 注意：加载字体集会**替换**编译器默认字体，只装 cjk（无数学字体）会令全部公式
+   报 `current font does not support math`，必须 text+cjk 同时加载。
+2. 模板加 `#show math.text: set text(font: ("Libertinus Serif", "Noto Serif CJK SC"))`
+   把字体栈下推到数学文本元素（仅 `#set text(font:)` 对混合 run 无效）。
+3. CJK 字体改用 notofonts/noto-cjk **全量** NotoSerifCJKsc（24.5MB，cmap 42246 码点）。
+4. `scripts/fetch-wasm.mjs` → `fetch-assets.mjs`：新增 23 个字体下载（md5/大小校验、
+   多源回退、校验不符自动重下）。
+
+**验收**：真实文档全量滚动，含中文公式空渲染 0、编译错误 0、pageerror 0；
+"酉"字标签截图确认为真汉字；字形复杂度分析（真汉字 path 段数 ≥30）6/6。
 
 ### M1 发布清单
 
