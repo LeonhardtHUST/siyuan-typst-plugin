@@ -25,21 +25,28 @@
 
 ### 第二部分执行进度（2026-10-27）
 
-- ✅ **P1 完成**：`patches/siyuan/math-renderer-registry.patch` 已生成并验证
-  （v3.8.8 源码 `git apply --check` 通过、esbuild 语法检查通过），已提交到
-  siyuan-patch 并推送到 fork。
-- 🟡 **P0 基本完成，剩一个授权阻塞**：`sync-upstream.yml` 与 `release-docker.yml`
-  改造（GHCR、接入 registry patch）已在本地提交 `7517ce9`，但 **gh token 缺少
-  `workflow` scope，GitHub 拒绝推送含 workflow 的提交**。解除方式：用户执行
-  `gh auth refresh -s workflow` 后补推该提交；在此之前 CI 镜像构建无法触发。
-- ✅ **P2 核心完成**：插件侧注册表适配（特性检测 + 双模式）已提交并验证降级路径
-  （官方思源 4/4 接管、无标记文档 476 公式 0 错误）。patched 镜像下的零 KaTeX
-  模式待 P0 解除后验证。
+- ✅ **P0 完成**：`sync-upstream.yml`（每日跟随上游）+ `release-docker.yml`（接入 registry
+  patch、切换 GHCR、owner 小写）。CI 构建成功（35 分钟，amd64+arm64 双架构，
+  run `40478159589`），镜像 `ghcr.io/leonhardthust/siyuan:v3.8.8`（含 `-amd64` /
+  `-arm64` / `latest` 标签，公开可匿名拉取）。
+- ✅ **P1 完成**：`patches/siyuan/math-renderer-registry.patch` 已在 CI 中干净应用
+  （clone+apply 步骤通过），v3.8.8 源码 `git apply --check` 与 esbuild 语法检查均通过。
+- ✅ **P2 完成并在 patched 镜像上验证**：注册表模式激活
+  （日志 `已注册数学渲染器（KaTeX 零开销模式）`）；真实文档 541 个公式节点、
+  **DOM 内 KaTeX 节点数 = 0**、0 错误、0 pageerror；typst-math 测试文档 4/4 接管
+  （Typst 语法渲染成功、LaTeX 语法如期报错）。
+- ✅ **生产服务器已切换**：`/opt/siyuan/docker-compose.yml` 镜像改为
+  `ghcr.io/leonhardthust/siyuan:v3.8.8`，数据卷不变；回滚 = 恢复
+  `docker-compose.yml.bak-20261027` 后 `docker compose up -d`（旧镜像仍在本地）。
+- 📌 **验收口径修正**：`katex.min.js` 请求数会因**第三方插件**（实测为
+  `siyuan-plugin-copilot` 自带的 KaTeX 加载）而非零；SiYuan 核心的 KaTeX
+  加载/渲染为 0（DOM 无 `.katex` 节点即证据）。验收应断言"核心 KaTeX 零加载"，
+  而非"页面零 KaTeX 请求"。
 - 📌 **P2 侦察结论（修正计划假设）**：SiYuan 的公式编辑面板（双击公式打开的
   `.protyle-util`）**只有源码 textarea，没有内置 KaTeX 预览**——编辑时的"预览"就是
   身后的公式块本身（随输入实时更新）。因此编辑体验由块级接管/registry 覆盖即可，
   无需单独接管编辑面板。
-- ⬜ P3 导出链路（待 patched 镜像）、P4 边角与移动端未开始。
+- ⬜ P3 导出链路（patched 镜像已就绪，可随时开始）、P4 边角与移动端未开始。
 
 ---
 
