@@ -160,22 +160,46 @@ export default class TypstPlugin extends Plugin {
     const clean_text = (s: string | null | undefined) =>
       (s || "").replace(/[\u200b\u200c\u200d\ufeff]/g, "").trim();
 
+    const find_marker_block = (wysiwyg: HTMLElement): HTMLElement | null => {
+      for (const el of Array.from(wysiwyg.children).slice(0, 5)) {
+        const text = clean_text(el.textContent);
+        if (TYPST_MATH_MARKER.test(text)) {
+          return el as HTMLElement;
+        }
+        // 跳过空段落，遇到第一个有内容的块则停止（标记必须位于文档头部）
+        if (text !== "") {
+          return null;
+        }
+      }
+      return null;
+    };
+
+    // 文档是否启用 typst-math 的判定缓存。注册表的 canRender 会在
+    // loaded-protyle-static（标记同步时机）之前被调用，此时属性尚未写入，
+    // 因此需要按需直接检测头部标记并缓存结果。
+    const typst_doc_cache = new WeakMap<HTMLElement, boolean>();
+    const is_typst_doc_root = (wysiwyg: HTMLElement | null): boolean => {
+      if (!wysiwyg) {
+        return false;
+      }
+      if (wysiwyg.getAttribute("data-typst-math") === "1") {
+        return true;
+      }
+      const cached = typst_doc_cache.get(wysiwyg);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const enabled = find_marker_block(wysiwyg) !== null;
+      typst_doc_cache.set(wysiwyg, enabled);
+      return enabled;
+    };
+
     const sync_typst_math_flag = (wysiwyg: HTMLElement | null | undefined) => {
       if (!wysiwyg) {
         return;
       }
-      let marker_el: HTMLElement | null = null;
-      for (const el of Array.from(wysiwyg.children).slice(0, 5)) {
-        const text = clean_text(el.textContent);
-        if (TYPST_MATH_MARKER.test(text)) {
-          marker_el = el as HTMLElement;
-          break;
-        }
-        // 跳过空段落，遇到第一个有内容的块则停止（标记必须位于文档头部）
-        if (text !== "") {
-          break;
-        }
-      }
+      const marker_el = find_marker_block(wysiwyg);
+      typst_doc_cache.set(wysiwyg, marker_el !== null);
       // 标记块打属性，供 CSS 隐藏（内容仍保留，仅视觉隐藏）
       wysiwyg
         .querySelectorAll(`[${MARKER_ATTR}]`)
@@ -209,7 +233,7 @@ export default class TypstPlugin extends Plugin {
         return { raw: false, content: decode(raw_content.slice(3, -1)) };
       }
       const wysiwyg = element.closest(".protyle-wysiwyg") as HTMLElement | null;
-      if (wysiwyg && wysiwyg.getAttribute("data-typst-math") === "1") {
+      if (is_typst_doc_root(wysiwyg)) {
         return { raw: false, content: decode(raw_content) };
       }
       return null;
@@ -609,6 +633,40 @@ $pin("l1")${typst_content}$
       protyle_observer_map.set(p, observer);
     };
 
+    // ---- 数学渲染器注册表适配（patched SiYuan，见 siyuan-patch 的 math-renderer-registry）----
+    // patched 版 SiYuan 的 mathRender 会在同步过滤阶段询问 canRender：
+    // 认领后置 data-render 并跳过 KaTeX——KaTeX 的 CSS/JS 完全不加载（零渲染冗余）。
+    // 官方版思源无此 API，自动回退到上面的观察器 DOM 接管路径。
+    const registry_api = this as any;
+    const registry_supported =
+      typeof registry_api.registerMathRenderer === "function" &&
+      typeof registry_api.unregisterMathRenderer === "function";
+    if (registry_supported) {
+      registry_api.registerMathRenderer("typst", {
+        canRender: (context: { element: HTMLElement }) =>
+          resolve_typst(context.element) !== null,
+        render: async (context: {
+          element: HTMLElement;
+          applyInlineMathBoundaries?: () => void;
+        }) => {
+          try {
+            if (context.element.tagName === "DIV") {
+              await render_block_once(context.element);
+            } else {
+              await render_inline_once(context.element);
+              // 注册表模式下 SiYuan 不再执行 KaTeX 分支，光标边界需渲染器自行补上
+              context.applyInlineMathBoundaries?.();
+            }
+            return true;
+          } catch (e) {
+            console.warn("[typst] 注册表渲染失败，回退 KaTeX:", e);
+            return false;
+          }
+        },
+      });
+      console.log("[typst] 已注册数学渲染器（KaTeX 零开销模式）");
+    }
+
     this.eventBus.on("loaded-protyle-static", (event) => {
       const p = event.detail.protyle;
       sync_typst_math_flag_of_protyle(p);
@@ -683,5 +741,17 @@ $pin("l1")${typst_content}$
 }`;
     document.getElementById(style.id)?.remove();
     document.head.append(style);
+  }
+
+  onunload() {
+    // 注销注册表渲染器：patched 思源上避免卸载后残留认领逻辑
+    const registry_api = this as any;
+    if (typeof registry_api.unregisterMathRenderer === "function") {
+      try {
+        registry_api.unregisterMathRenderer("typst");
+      } catch (e) {
+        console.warn("[typst] 注销渲染器失败:", e);
+      }
+    }
   }
 }
