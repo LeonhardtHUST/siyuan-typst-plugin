@@ -208,10 +208,17 @@ export default class TypstPlugin extends Plugin {
       if (wysiwyg.getAttribute("data-typst-math") === "1") {
         return true;
       }
+      // 首选：文档自定义属性 custom-typstmath（设置 → 文档属性 → 自定义属性，完全不可见）
+      // 这是推荐的开启方式，不污染正文。
+      const attr = wysiwyg.getAttribute("custom-typstmath");
+      if (attr !== null && attr !== "0" && attr !== "false") {
+        return true;
+      }
       const cached = typst_doc_cache.get(wysiwyg);
       if (cached !== undefined) {
         return cached;
       }
+      // 兼容旧方式：正文头部写 <!-- typst-math -->（段落或 HTML 块）
       const enabled = find_marker_block(wysiwyg) !== null;
       typst_doc_cache.set(wysiwyg, enabled);
       return enabled;
