@@ -179,7 +179,14 @@ export default class TypstPlugin extends Plugin {
     const find_marker_block = (wysiwyg: HTMLElement): HTMLElement | null => {
       for (const el of Array.from(wysiwyg.children).slice(0, 5)) {
         const text = clean_text(el.textContent);
-        if (TYPST_MATH_MARKER.test(text)) {
+        // 标记可能以两种形态存在：
+        //   1) 普通段落（文本节点）——用户手动输入或 createDocWithMd 生成
+        //   2) HTML 块（内核 Markdown 导入把 <!-- --> 解析为 NodeHTMLBlock，
+        //      注释不在 textContent 里，需要检查 innerHTML）
+        const in_html_block = /<!--\s*typst-math\s*-->/.test(
+          (el as HTMLElement).innerHTML || "",
+        );
+        if (TYPST_MATH_MARKER.test(text) || in_html_block) {
           return el as HTMLElement;
         }
         // 跳过空段落，遇到第一个有内容的块则停止（标记必须位于文档头部）
