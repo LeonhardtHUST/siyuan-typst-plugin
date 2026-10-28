@@ -108,43 +108,37 @@ export default class TypstPlugin extends Plugin {
       compiler: createTypstCompiler(),
       renderer: createTypstRenderer(),
     };
-    // 修复链路 B2：初始化转为后台任务，onload 不再被 wasm 加载阻塞。
-    // 否则事件监听注册晚于"启动时恢复页签"派发的 loaded-protyle-static，监听器永远错过。
-    // 渲染函数内部 await wasmReady 排队，就绪后统一放行。
+    // 修复链路 B2：初始化不再发生在 onload，事件监听得以先注册。
+    // 否则监听器注册晚于"启动时恢复页签"派发的 loaded-protyle-static，永远错过。
+    // 渲染函数内部各自 await ensure_wasm() 排队，就绪后统一放行。
     //
-    // 修复链路 B3：wasmReady 只初始化主上下文。原先备份上下文也在启动期初始化，
-    // 等于首屏要为 21.7MB wasm + text/cjk 字体各拉两遍、实例化两遍；远端链路
-    // 实测首屏渲染 12s → 70s。改为首次换池时懒初始化，并在主上下文就绪后闲时预热。
-    const wasmReady: Promise<void> = init_context(context);
+    // 修复链路 B3：wasm 上下文全部按需初始化。
+    // 原先主/备份两个上下文都在启动期初始化，等于开机为 21.7MB wasm + text/cjk 字体
+    // 各拉两遍、实例化两遍。远端反代链路上，这一个 21.7MB 请求会把同一条 h2 连接上
+    // 的其它请求饿死（实测 0 字节的小接口被拖到 20s），首屏 12s → 70s+。
+    // 现在：只有真正要渲染 Typst 公式时才建主上下文；备份上下文留到首次换池。
+    let wasm_init: Promise<void> | null = null;
+    const ensure_wasm = (): Promise<void> => {
+      if (!wasm_init) {
+        wasm_init = init_context(context).catch((e) => {
+          // 失败后置空，允许下次渲染重试
+          wasm_init = null;
+          throw e;
+        });
+      }
+      return wasm_init;
+    };
 
     let backup_ready: Promise<void> | null = null;
     const ensure_backup_context = (): Promise<void> => {
       if (!backup_ready) {
         backup_ready = init_context(_backup_context).catch((e) => {
-          // 失败后置空，允许后续（闲时预热或首次换池）重试
+          // 失败后置空，允许后续（首次换池）重试
           backup_ready = null;
           throw e;
         });
       }
       return backup_ready;
-    };
-    // 闲时预热：主上下文就绪后延迟到浏览器空闲再建备份，避开首屏资源竞争。
-    const BACKUP_PREWARM_DELAY_MS = 20000;
-    const prewarm_backup_context = () => {
-      if (backup_ready) return;
-      const start = () => {
-        ensure_backup_context().catch((e) =>
-          console.warn("[typst] 备份上下文预热失败，将在首次换池时重试:", e),
-        );
-      };
-      setTimeout(() => {
-        const ric = (window as any).requestIdleCallback;
-        if (typeof ric === "function") {
-          ric(start, { timeout: 30000 });
-        } else {
-          start();
-        }
-      }, BACKUP_PREWARM_DELAY_MS);
     };
 
     const get_backup_context = async () => {
@@ -405,7 +399,6 @@ export default class TypstPlugin extends Plugin {
     };
 
     const render_block_once = async (element: HTMLElement) => {
-      await wasmReady;
       // console.log("block", element);
       const resolved = resolve_typst(element);
       if (!resolved) {
@@ -416,6 +409,8 @@ export default class TypstPlugin extends Plugin {
         }
         return;
       }
+      // 只有确认要走 Typst 才初始化 wasm：整篇普通文档（KaTeX/无公式）零下载
+      await ensure_wasm();
       const is_raw_typst = resolved.raw;
       const typst_content = resolved.content;
       const content_hash = SimpleHash.djb2(typst_content)
@@ -523,7 +518,6 @@ $ ${typst_content} $
       lru_cache.set(content_hash, shadowRoot.innerHTML);
     };
     const render_inline_once = async (element: HTMLElement) => {
-      await wasmReady;
       // console.log("inline", element);
       const resolved = resolve_typst(element);
       if (!resolved) {
@@ -535,6 +529,8 @@ $ ${typst_content} $
         }
         return;
       }
+      // 只有确认要走 Typst 才初始化 wasm（同 block 分支）
+      await ensure_wasm();
       const is_raw_typst = resolved.raw;
       const typst_content = resolved.content;
       const content_hash = SimpleHash.djb2(typst_content)
@@ -895,26 +891,22 @@ $pin("l1")${typst_content}$
       // console.log(`Destroy Protyle. id: ${p.id}, block id: ${p.block.id}`);
     });
 
-    // 全局兜底扫描：覆盖所有"事件早于插件就绪"的已打开文档
-    wasmReady
-      .then(() => {
-        document
-          .querySelectorAll<HTMLElement>(".protyle-wysiwyg")
-          .forEach(sync_typst_math_flag);
-        scan_element(document.body);
-        // 思源懒渲染回填占位节点需要时间，稍后复扫一次
-        setTimeout(() => {
-          document
-            .querySelectorAll<HTMLElement>(".protyle-wysiwyg")
-            .forEach(sync_typst_math_flag);
-          scan_element(document.body);
-        }, 1500);
-        // 主上下文就绪后再闲时预热备份上下文（B3）
-        prewarm_backup_context();
-      })
-      .catch((e) => {
-        console.error("[typst] wasm init failed:", e);
-      });
+    // 全局兜底扫描：覆盖所有"事件早于插件就绪"的已打开文档。
+    // 不再等待 wasm：扫描只做标记与清理，真正渲染时才由 render_*_once 按需初始化。
+    // 这样普通文档（没有 Typst 公式）整个会话都不会下载那个 21.7MB 的 wasm。
+    const scan_all_protyle = () => {
+      document
+        .querySelectorAll<HTMLElement>(".protyle-wysiwyg")
+        .forEach(sync_typst_math_flag);
+      scan_element(document.body);
+    };
+    try {
+      scan_all_protyle();
+      // 思源懒渲染回填占位节点需要时间，稍后复扫一次
+      setTimeout(scan_all_protyle, 1500);
+    } catch (e) {
+      console.error("[typst] 初始扫描失败:", e);
+    }
 
     // 样式：
     // 1) typst-math 文档中，尚未接管的公式先隐藏 KaTeX 内容（含其报错红字），避免闪烁；
