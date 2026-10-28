@@ -111,15 +111,49 @@ export default class TypstPlugin extends Plugin {
     // 修复链路 B2：初始化转为后台任务，onload 不再被 wasm 加载阻塞。
     // 否则事件监听注册晚于"启动时恢复页签"派发的 loaded-protyle-static，监听器永远错过。
     // 渲染函数内部 await wasmReady 排队，就绪后统一放行。
-    const wasmReady: Promise<void> = (async () => {
-      await init_context(_backup_context);
-      await init_context(context);
-    })();
+    //
+    // 修复链路 B3：wasmReady 只初始化主上下文。原先备份上下文也在启动期初始化，
+    // 等于首屏要为 21.7MB wasm + text/cjk 字体各拉两遍、实例化两遍；远端链路
+    // 实测首屏渲染 12s → 70s。改为首次换池时懒初始化，并在主上下文就绪后闲时预热。
+    const wasmReady: Promise<void> = init_context(context);
+
+    let backup_ready: Promise<void> | null = null;
+    const ensure_backup_context = (): Promise<void> => {
+      if (!backup_ready) {
+        backup_ready = init_context(_backup_context).catch((e) => {
+          // 失败后置空，允许后续（闲时预热或首次换池）重试
+          backup_ready = null;
+          throw e;
+        });
+      }
+      return backup_ready;
+    };
+    // 闲时预热：主上下文就绪后延迟到浏览器空闲再建备份，避开首屏资源竞争。
+    const BACKUP_PREWARM_DELAY_MS = 20000;
+    const prewarm_backup_context = () => {
+      if (backup_ready) return;
+      const start = () => {
+        ensure_backup_context().catch((e) =>
+          console.warn("[typst] 备份上下文预热失败，将在首次换池时重试:", e),
+        );
+      };
+      setTimeout(() => {
+        const ric = (window as any).requestIdleCallback;
+        if (typeof ric === "function") {
+          ric(start, { timeout: 30000 });
+        } else {
+          start();
+        }
+      }, BACKUP_PREWARM_DELAY_MS);
+    };
+
     const get_backup_context = async () => {
-      // 先初始化"下一代"备份，成功后才把旧备份交出：
+      // 备份上下文已改为懒初始化：先确保可用（首次换池才付这笔开销），
+      // 成功后才把旧备份交出：
       // 原实现先交出旧实例再初始化新实例，一旦初始化失败（双标签页并发渲染时
       // wasm 实例创建可能 OOM/失败），主上下文会拿到未初始化实例，
       // 后续所有渲染抛错 → 注册表回退 KaTeX → 整页公式退化为 KaTeX。
+      await ensure_backup_context();
       const next = {
         compiler: createTypstCompiler(),
         renderer: createTypstRenderer(),
@@ -875,6 +909,8 @@ $pin("l1")${typst_content}$
             .forEach(sync_typst_math_flag);
           scan_element(document.body);
         }, 1500);
+        // 主上下文就绪后再闲时预热备份上下文（B3）
+        prewarm_backup_context();
       })
       .catch((e) => {
         console.error("[typst] wasm init failed:", e);
